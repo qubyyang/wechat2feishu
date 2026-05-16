@@ -2,6 +2,12 @@
 
 Self-hosted Wechat2feishu clone for personal use. Paste a WeChat public account article link, clean the article into Markdown, import it into Feishu Docs, and keep a local transfer history.
 
+## Preview
+
+Current web UI running locally:
+
+![W2F Vault web UI](./resources/web.png)
+
 ## Setup
 
 1. Fill `.env`:
