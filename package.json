@@ -1,7 +1,7 @@
 {
   "name": "wechat2feishu-selfhost",
   "version": "0.1.0",
-  "description": "Self-hosted WeChat public account article exporter for Markdown and Feishu Docs.",
+  "description": "自托管微信公众号文章归档工具，支持 Markdown、飞书和按公众号批量导出。 / Self-hosted WeChat public account article archiver for Markdown, Feishu Docs, and account batch export.",
   "private": true,
   "author": "qubyyang <yangyihao.app@gmail.com>",
   "license": "MIT",
