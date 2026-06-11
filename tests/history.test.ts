@@ -34,11 +34,19 @@ describe("HistoryStore", () => {
       documentToken: "doc-b",
       status: "success"
     });
+    await store.add({
+      title: "第三篇",
+      sourceUrl: "https://mp.weixin.qq.com/s/c",
+      status: "success",
+      target: "markdown"
+    });
 
     const records = await store.list();
-    expect(records).toHaveLength(2);
-    expect(records[0].title).toBe("第二篇");
-    expect(records[1].title).toBe("第一篇");
+    expect(records).toHaveLength(3);
+    expect(records[0].title).toBe("第三篇");
+    expect(records[0].target).toBe("markdown");
+    expect(records[1].title).toBe("第二篇");
+    expect(records[2].title).toBe("第一篇");
     expect(records[0].createdAt).toMatch(/T/);
 
     await store.clear();

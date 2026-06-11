@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { assertFeishuConfig } from "@/lib/env";
-import { FeishuClient } from "@/lib/feishu";
+import { getServerConfig } from "@/lib/env";
 import { HistoryStore } from "@/lib/history";
+import { safeMarkdownFilename } from "@/lib/safe";
 import { fetchAndConvertWechatArticle } from "@/lib/wechat";
 
 export const runtime = "nodejs";
@@ -11,45 +11,35 @@ export const maxDuration = 120;
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as { url?: string };
   const sourceUrl = body.url?.trim() ?? "";
-  const config = assertFeishuConfig();
-  const history = new HistoryStore(config.historyPath);
+  const history = new HistoryStore(getServerConfig().historyPath);
 
   try {
     const { article, markdown } = await fetchAndConvertWechatArticle(sourceUrl);
-    const feishu = new FeishuClient({
-      appId: config.appId,
-      appSecret: config.appSecret,
-      baseUrl: config.baseUrl,
-      folderToken: config.folderToken
-    });
-    const document = await feishu.importMarkdown({
-      markdown,
-      title: article.title
-    });
-    const record = await history.add({
-      documentToken: document.token,
-      documentUrl: document.url,
+    const filename = safeMarkdownFilename(article.title);
+    await history.add({
       sourceUrl: article.sourceUrl,
       status: "success",
-      target: "feishu",
+      target: "markdown",
       title: article.title
     });
 
-    return NextResponse.json({
-      article,
-      document,
-      history: record
+    return new NextResponse(markdown, {
+      headers: {
+        "cache-control": "no-store",
+        "content-disposition": `attachment; filename="wechat-article.md"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+        "content-type": "text/markdown; charset=utf-8"
+      }
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "转存失败";
+    const message = error instanceof Error ? error.message : "导出失败";
 
     if (sourceUrl) {
       await history.add({
         error: message,
         sourceUrl,
         status: "failed",
-        target: "feishu",
-        title: "转存失败"
+        target: "markdown",
+        title: "导出失败"
       });
     }
 

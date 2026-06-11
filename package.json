@@ -1,7 +1,20 @@
 {
   "name": "wechat2feishu-selfhost",
   "version": "0.1.0",
+  "description": "自托管微信公众号文章归档工具，支持 Markdown、飞书和按公众号批量导出。 / Self-hosted WeChat public account article archiver for Markdown, Feishu Docs, and account batch export.",
   "private": true,
+  "author": "qubyyang <yangyihao.app@gmail.com>",
+  "license": "MIT",
+  "keywords": [
+    "wechat",
+    "feishu",
+    "markdown",
+    "nextjs",
+    "self-hosted"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -12,6 +25,7 @@
   },
   "dependencies": {
     "cheerio": "^1.0.0",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.468.0",
     "next": "^14.2.33",
     "playwright-core": "^1.49.1",

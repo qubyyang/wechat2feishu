@@ -1,4 +1,4 @@
-import { safeDocumentTitle } from "./safe";
+import { safeDocumentTitle, safeMarkdownFilename } from "./safe";
 
 type Fetcher = typeof fetch;
 
@@ -94,7 +94,7 @@ export class FeishuClient {
     title: string,
     markdown: string
   ): Promise<string> {
-    const fileName = `${safeDocumentTitle(title)}.md`;
+    const fileName = safeMarkdownFilename(title);
     const form = new FormData();
     const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
 

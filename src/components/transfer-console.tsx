@@ -6,8 +6,11 @@ import {
   Check,
   Circle,
   Clipboard,
+  Download,
   FileText,
+  KeyRound,
   Link2,
+  List,
   Loader2,
   LogIn,
   ShieldCheck,
@@ -22,6 +25,9 @@ type ConfigStatus = {
   baseUrl: string;
   folderToken: boolean;
   ready: boolean;
+  wechatBatchReady: boolean;
+  wechatMpCookie: boolean;
+  wechatMpToken: boolean;
 };
 
 type HistoryRecord = {
@@ -31,22 +37,30 @@ type HistoryRecord = {
   id: string;
   sourceUrl: string;
   status: "failed" | "success";
+  target?: "feishu" | "markdown";
   title: string;
 };
 
-const pipeline = ["抓取正文", "清洗排版", "生成 Markdown", "导入飞书"];
+type PendingAction = "account-export" | "account-id" | "export" | "transfer";
+
+const pipeline = ["抓取正文", "清洗排版", "生成 Markdown", "归档或导出"];
 
 export function TransferConsole() {
   const [config, setConfig] = useState<ConfigStatus | null>(null);
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [message, setMessage] = useState("");
-  const [pending, setPending] = useState(false);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [accountId, setAccountId] = useState("");
+  const [accountUrl, setAccountUrl] = useState("");
+  const [batchLimit, setBatchLimit] = useState(20);
   const [url, setUrl] = useState("");
+  const pending = pendingAction !== null;
+  const canTransferToFeishu = Boolean(config?.ready);
+  const canBatchExport = Boolean(config?.wechatBatchReady);
 
   const statusLabel = useMemo(() => {
     if (!config) return "检查中";
     if (!config.ready) return ".env 未完成";
-    if (!config.folderToken) return "根目录模式";
     return "已连接";
   }, [config]);
 
@@ -70,7 +84,13 @@ export function TransferConsole() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setPending(true);
+
+    if (!canTransferToFeishu) {
+      await handleExport();
+      return;
+    }
+
+    setPendingAction("transfer");
     setMessage("");
 
     try {
@@ -92,7 +112,92 @@ export function TransferConsole() {
       setMessage(error instanceof Error ? error.message : "转存失败");
       await refresh();
     } finally {
-      setPending(false);
+      setPendingAction(null);
+    }
+  }
+
+  async function handleExport() {
+    setPendingAction("export");
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/export", {
+        body: JSON.stringify({ url }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      });
+
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response, "导出失败"));
+      }
+
+      const blob = await response.blob();
+      const filename =
+        getFilenameFromDisposition(response.headers.get("content-disposition")) ??
+        "微信文章归档.md";
+      downloadBlob(blob, filename);
+      setMessage(`已导出 Markdown：${filename}`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "导出失败");
+      await refresh();
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function handleExtractAccountId() {
+    setPendingAction("account-id");
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/account-id", {
+        body: JSON.stringify({ url: accountUrl }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      });
+      const json = (await response.json()) as { accountId?: string; error?: string };
+
+      if (!response.ok || !json.accountId) {
+        throw new Error(json.error ?? "公众号 ID 提取失败");
+      }
+
+      setAccountId(json.accountId);
+      setMessage(`已提取公众号 ID：${json.accountId}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "公众号 ID 提取失败");
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function handleBatchExport() {
+    setPendingAction("account-export");
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/account-export", {
+        body: JSON.stringify({ accountId, limit: batchLimit }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      });
+
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response, "批量导出失败"));
+      }
+
+      const blob = await response.blob();
+      const filename =
+        getFilenameFromDisposition(response.headers.get("content-disposition")) ??
+        "公众号文章.zip";
+      downloadBlob(blob, filename);
+      setMessage(`已导出公众号 Markdown 压缩包：${filename}`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "批量导出失败");
+      await refresh();
+    } finally {
+      setPendingAction(null);
     }
   }
 
@@ -162,16 +267,124 @@ export function TransferConsole() {
                   value={url}
                 />
               </div>
-              <button
-                className="inline-flex h-14 items-center justify-center gap-2 rounded-md bg-ink px-6 text-sm font-semibold text-white shadow-[0_14px_34px_rgba(21,21,21,.24)] transition hover:-translate-y-0.5 hover:bg-[#2b2b2b] disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-stone-400"
-                disabled={pending || !url}
-                type="submit"
+              <div
+                className={`grid gap-2 ${
+                  canTransferToFeishu ? "md:grid-cols-2" : "md:min-w-44"
+                }`}
               >
-                {pending ? <Loader2 className="animate-spin" size={18} /> : <Clipboard size={18} />}
-                一键转存
-              </button>
+                {canTransferToFeishu ? (
+                  <button
+                    className="inline-flex h-14 items-center justify-center gap-2 rounded-md bg-ink px-5 text-sm font-semibold text-white shadow-[0_14px_34px_rgba(21,21,21,.24)] transition hover:-translate-y-0.5 hover:bg-[#2b2b2b] disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-stone-400"
+                    disabled={pending || !url}
+                    type="submit"
+                  >
+                    {pendingAction === "transfer" ? (
+                      <Loader2 className="animate-spin" size={18} />
+                    ) : (
+                      <Clipboard size={18} />
+                    )}
+                    一键转存
+                  </button>
+                ) : null}
+                <button
+                  className={`inline-flex h-14 items-center justify-center gap-2 rounded-md px-5 text-sm font-semibold shadow-[0_10px_24px_rgba(21,21,21,.08)] transition hover:-translate-y-0.5 disabled:translate-y-0 disabled:cursor-not-allowed ${
+                    canTransferToFeishu
+                      ? "border border-black/10 bg-white text-ink hover:border-black/20 hover:bg-paper disabled:bg-stone-100 disabled:text-stone-400"
+                      : "bg-ink text-white hover:bg-[#2b2b2b] disabled:bg-stone-400"
+                  }`}
+                  disabled={pending || !url}
+                  onClick={handleExport}
+                  type="button"
+                >
+                  {pendingAction === "export" ? (
+                    <Loader2 className="animate-spin" size={18} />
+                  ) : (
+                    <FileText size={18} />
+                  )}
+                  导出 Markdown
+                </button>
+              </div>
             </div>
           </form>
+
+          <section className="mt-7 rounded-lg border border-black/10 bg-[#fbfaf7] p-4">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-stone-500">
+                  Account batch
+                </p>
+                <h3 className="mt-1 text-lg font-semibold">公众号批量 Markdown</h3>
+              </div>
+              <span
+                className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-xs font-semibold ${
+                  canBatchExport
+                    ? "bg-emerald-50 text-emerald-700"
+                    : "bg-clay/10 text-clay"
+                }`}
+              >
+                <KeyRound size={14} />
+                {canBatchExport ? "列表凭据已配置" : "缺少列表凭据"}
+              </span>
+            </div>
+
+            <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(240px,.45fr)]">
+              <div className="flex min-h-12 items-center gap-3 rounded-md border border-black/10 bg-white px-3">
+                <Link2 className="shrink-0 text-stone-400" size={18} />
+                <input
+                  className="h-11 w-full bg-transparent text-sm outline-none placeholder:text-stone-400"
+                  onChange={(event) => setAccountUrl(event.target.value)}
+                  placeholder="粘贴任意一篇公众号文章链接，用于提取 __biz"
+                  value={accountUrl}
+                />
+              </div>
+              <button
+                className="inline-flex h-12 items-center justify-center gap-2 rounded-md border border-black/10 bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-400"
+                disabled={pending || !accountUrl}
+                onClick={handleExtractAccountId}
+                type="button"
+              >
+                {pendingAction === "account-id" ? (
+                  <Loader2 className="animate-spin" size={17} />
+                ) : (
+                  <List size={17} />
+                )}
+                提取公众号 ID
+              </button>
+            </div>
+
+            <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_120px_minmax(180px,.35fr)]">
+              <div className="flex min-h-12 items-center gap-3 rounded-md border border-black/10 bg-white px-3">
+                <KeyRound className="shrink-0 text-stone-400" size={18} />
+                <input
+                  className="h-11 w-full bg-transparent text-sm outline-none placeholder:text-stone-400"
+                  onChange={(event) => setAccountId(event.target.value)}
+                  placeholder="公众号 ID / __biz，例如 Mzk5MDcyODQ2Mw=="
+                  value={accountId}
+                />
+              </div>
+              <input
+                className="h-12 rounded-md border border-black/10 bg-white px-3 text-sm outline-none"
+                max={100}
+                min={1}
+                onChange={(event) => setBatchLimit(Number(event.target.value))}
+                type="number"
+                value={batchLimit}
+              />
+              <button
+                className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(21,21,21,.12)] transition hover:-translate-y-0.5 hover:bg-[#2b2b2b] disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-stone-400"
+                disabled={pending || !accountId}
+                onClick={handleBatchExport}
+                type="button"
+              >
+                {pendingAction === "account-export" ? (
+                  <Loader2 className="animate-spin" size={17} />
+                ) : (
+                  <Download size={17} />
+                )}
+                下载 ZIP
+              </button>
+            </div>
+          </section>
 
           {message ? (
             <div className="mt-5 flex min-w-0 items-start gap-3 rounded-md border border-black/10 bg-white/70 px-4 py-3 text-sm text-stone-700">
@@ -218,18 +431,26 @@ export function TransferConsole() {
               <StatusRow active={Boolean(config?.appId)} label="App ID" />
               <StatusRow active={Boolean(config?.appSecret)} label="App Secret" />
               <StatusRow active={Boolean(config?.folderToken)} label="Folder Token" />
+              <StatusRow active={Boolean(config?.wechatMpToken)} label="MP Token" />
+              <StatusRow active={Boolean(config?.wechatMpCookie)} label="MP Cookie" />
             </div>
-            {!config?.folderToken ? (
+            {!config?.ready ? (
               <p className="mt-5 rounded-md bg-white/8 px-3 py-3 text-sm leading-6 text-paper/70 [overflow-wrap:anywhere]">
-                未填写文件夹 token 时，飞书会尝试挂载到应用可访问的根位置；失败时请补充
-                `FEISHU_FOLDER_TOKEN`。
+                飞书配置未完整时仅启用本地 Markdown 导出；填写 `FEISHU_APP_ID`、
+                `FEISHU_APP_SECRET` 和 `FEISHU_FOLDER_TOKEN` 后会显示飞书转存。
+              </p>
+            ) : null}
+            {!config?.wechatBatchReady ? (
+              <p className="mt-3 rounded-md bg-white/8 px-3 py-3 text-sm leading-6 text-paper/70 [overflow-wrap:anywhere]">
+                批量获取公众号文章列表需要 `W2F_WECHAT_MP_TOKEN` 和
+                `W2F_WECHAT_MP_COOKIE`；单篇 Markdown 导出不依赖它们。
               </p>
             ) : null}
           </section>
 
           <section className="min-w-0 rounded-lg border border-black/10 bg-white/56 p-6 shadow-soft backdrop-blur-2xl">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">最近归档</h2>
+              <h2 className="text-lg font-semibold">最近处理</h2>
               <button
                 className="inline-flex items-center gap-2 rounded-md border border-black/10 px-3 py-2 text-sm font-medium text-stone-600 transition hover:bg-white"
                 onClick={clearHistory}
@@ -245,7 +466,7 @@ export function TransferConsole() {
                 history.map((record) => <HistoryItem key={record.id} record={record} />)
               ) : (
                 <div className="rounded-md border border-dashed border-black/15 px-4 py-8 text-center text-sm text-stone-500">
-                  暂无归档记录
+                  暂无处理记录
                 </div>
               )}
             </div>
@@ -254,6 +475,37 @@ export function TransferConsole() {
       </section>
     </main>
   );
+}
+
+async function readErrorMessage(response: Response, fallback: string) {
+  const json = (await response.json().catch(() => null)) as { error?: string } | null;
+  return json?.error ?? fallback;
+}
+
+function getFilenameFromDisposition(value: string | null) {
+  if (!value) return null;
+
+  const encoded = value.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      return encoded;
+    }
+  }
+
+  return value.match(/filename="([^"]+)"/i)?.[1] ?? null;
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(href);
 }
 
 function StatusRow({ active, label }: { active: boolean; label: string }) {
@@ -273,13 +525,16 @@ function StatusRow({ active, label }: { active: boolean; label: string }) {
 }
 
 function HistoryItem({ record }: { record: HistoryRecord }) {
+  const targetLabel = record.target === "markdown" ? "本地 Markdown" : "飞书文档";
+  const StatusIcon =
+    record.status === "success" && record.target === "markdown" ? FileText : Check;
   const content = (
     <div className="min-w-0 rounded-md border border-black/10 bg-[#fbfaf7] px-4 py-3 transition hover:bg-white">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{record.title}</p>
           <p className="mt-1 truncate text-xs text-stone-500">
-            {new Date(record.createdAt).toLocaleString()}
+            {targetLabel} · {new Date(record.createdAt).toLocaleString()}
           </p>
           {record.error ? (
             <p className="mt-2 text-xs leading-5 text-clay [overflow-wrap:anywhere]">
@@ -288,7 +543,7 @@ function HistoryItem({ record }: { record: HistoryRecord }) {
           ) : null}
         </div>
         {record.status === "success" ? (
-          <Check className="shrink-0 text-emerald-600" size={18} />
+          <StatusIcon className="shrink-0 text-emerald-600" size={18} />
         ) : (
           <AlertTriangle className="shrink-0 text-clay" size={18} />
         )}

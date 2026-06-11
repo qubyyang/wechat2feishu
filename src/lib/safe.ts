@@ -11,6 +11,12 @@ export function safeDocumentTitle(value: string): string {
   return (cleaned || "微信文章归档").slice(0, 80);
 }
 
+export function safeMarkdownFilename(value: string): string {
+  const title = safeDocumentTitle(value).replace(/[.\s]+$/g, "").trim();
+
+  return `${title || "微信文章归档"}.md`;
+}
+
 export function assertWechatArticleUrl(value: string): URL {
   let url: URL;
 

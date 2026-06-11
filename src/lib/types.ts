@@ -6,6 +6,13 @@ export type WechatArticle = {
   title: string;
 };
 
+export type WechatPublishedArticle = {
+  cover?: string;
+  publishedAt?: string;
+  title: string;
+  url: string;
+};
+
 export type TransferHistoryRecord = {
   createdAt: string;
   documentToken?: string;
@@ -14,6 +21,7 @@ export type TransferHistoryRecord = {
   id: string;
   sourceUrl: string;
   status: "failed" | "success";
+  target?: "feishu" | "markdown";
   title: string;
 };
 
