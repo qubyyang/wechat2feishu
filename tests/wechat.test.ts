@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 
-import { articleToMarkdown, extractWechatArticle } from "@/lib/wechat";
+import {
+  articleToMarkdown,
+  extractWechatArticle,
+  resolvePlaywrightChromium
+} from "@/lib/wechat";
 
 const sampleWechatHtml = `
 <!doctype html>
@@ -44,5 +48,22 @@ describe("WeChat article extraction", () => {
     expect(markdown).toContain("第一段正文，带有 **重点**。");
     expect(markdown).toContain("![产品截图](https://mmbiz.qpic.cn/mmbiz_png/example/640?wx_fmt=png)");
     expect(markdown).toContain("原文链接：https://mp.weixin.qq.com/s/demo");
+  });
+});
+
+describe("playwright-core 加载兼容", () => {
+  const chromium = { launch: () => Promise.resolve({}) };
+
+  test("兼容 CJS default 导出的形状", () => {
+    expect(resolvePlaywrightChromium({ default: { chromium } })).toBe(chromium);
+  });
+
+  test("兼容具名导出的形状", () => {
+    expect(resolvePlaywrightChromium({ chromium })).toBe(chromium);
+  });
+
+  test("缺失时返回 undefined 而不是抛错", () => {
+    expect(resolvePlaywrightChromium({})).toBeUndefined();
+    expect(resolvePlaywrightChromium(undefined)).toBeUndefined();
   });
 });

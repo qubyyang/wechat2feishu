@@ -41,6 +41,13 @@ W2F_HISTORY_PATH=./data/history.json
 W2F_CHROME_EXECUTABLE_PATH=
 W2F_WECHAT_MP_TOKEN=
 W2F_WECHAT_MP_COOKIE=
+
+# 抓取限速，默认值已按"宁慢勿封"设定，一般不需要改
+W2F_WECHAT_LIST_INTERVAL_MS=3000      # 文章列表分页之间的间隔
+W2F_WECHAT_LIST_PAGE_SIZE=5           # 每页条数，1..20
+W2F_WECHAT_ARTICLE_INTERVAL_MS=1200   # 逐篇抓取正文之间的间隔
+W2F_WECHAT_MAX_RETRIES=3              # 触发频控后的重试次数
+W2F_WECHAT_RETRY_BASE_MS=6000         # 退避基数，实际等待为基数 × 2^n
 ```
 
 ## 获取飞书配置
@@ -157,6 +164,28 @@ http://localhost:3000
 - `manifest.json`，记录每篇文章的 URL 和导出状态。
 - `_errors.md`，当部分文章因安全验证、文章删除或网络错误失败时会生成。
 
+## freq control（频控）排查
+
+批量导出时如果报错 `freq control`，说明微信后台的 `/cgi-bin/appmsgpublish` 接口触发了频率限制（`ret=200013`）。这是微信的配额限制，不是代码异常。先跑自检脚本判断属于哪种情况：
+
+```bash
+npm run probe:wechat -- MzI3MzYwODk2MQ==
+```
+
+脚本会先校验登录态，再探测文章列表接口，输出分三种：
+
+| 输出 | 含义 | 处理 |
+| --- | --- | --- |
+| 登录态无效，`searchbiz` 返回 `200003` | cookie 或 token 已失效 | 重新登录后台，更新 `.env` 的 `W2F_WECHAT_MP_TOKEN` 与 `W2F_WECHAT_MP_COOKIE` |
+| 登录态有效，但 `appmsgpublish` 返回 `200013` | 该接口的独立配额已耗尽 | 等待冷却（通常数分钟，严重时到次日额度重置），不要反复重试 |
+| 两项都通过 | 正常 | 先用小 `limit`（比如 5）验证，再逐步加大 |
+
+注意事项：
+
+- `appmsgpublish` 的频控配额与 `searchbiz`、`home` 等后台接口相互独立，所以登录态有效不代表列表接口可用。
+- 频控期间继续发请求会延长冷却时间，脚本与代码都会自动退避，不要手动连点。
+- 一次导出篇数越大，列表分页请求越多。100 篇 = 20 次列表请求 + 100 次正文请求，建议分批（20 篇以内）执行。
+
 ## 启动
 
 ```bash
@@ -176,6 +205,7 @@ http://localhost:3000
 - 本地 Markdown 导出不需要飞书配置。
 - 飞书配置不完整时，页面只启用本地 Markdown 导出。
 - 微信可能向服务端抓取返回安全验证页。遇到这种情况时，可以在 `.env` 中填写 `W2F_CHROME_EXECUTABLE_PATH`，启用浏览器抓取回退。
+- 批量导出默认限速：列表分页间隔 3s、正文间隔 1.2s，遇到 `freq control` 自动指数退避重试。列表中途被限流时会返回已抓到的部分文章，而不是整批失败。
 - 处理历史保存在 `W2F_HISTORY_PATH`。
 
 ## 验证

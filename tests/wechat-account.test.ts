@@ -1,12 +1,46 @@
 import JSZip from "jszip";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
   buildWechatAccountMarkdownZip,
   extractWechatAccountId,
   extractWechatAccountIdFromHtml,
-  parseWechatPublishArticles
+  fetchWechatAccountArticles,
+  parseWechatPublishArticles,
+  WechatApiError
 } from "@/lib/wechat";
+
+function jsonResponse(payload: unknown, status = 200) {
+  return {
+    json: async () => payload,
+    ok: status >= 200 && status < 300,
+    status
+  } as unknown as Response;
+}
+
+function pagePayload(titles: string[], total = titles.length) {
+  return {
+    base_resp: { err_msg: "ok", ret: 0 },
+    publish_page: JSON.stringify({
+      publish_list: titles.map((title, index) => ({
+        publish_info: JSON.stringify({
+          appmsgex: [
+            { create_time: 1710000000 + index, link: `https://mp.weixin.qq.com/s/${title}`, title }
+          ]
+        })
+      })),
+      total_count: total
+    })
+  };
+}
+
+function freqControlResponse() {
+  return jsonResponse({ base_resp: { err_msg: "freq control", ret: 200013 } });
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const publishResponse = {
   publish_page: JSON.stringify({
@@ -115,7 +149,8 @@ describe("WeChat account helpers", () => {
     const result = await buildWechatAccountMarkdownZip({
       accountId: "Mzk5MDcyODQ2Mw==",
       articles: parseWechatPublishArticles(publishResponse),
-      convert
+      convert,
+      intervalMs: 0
     });
     const zip = await JSZip.loadAsync(result.zip);
 
@@ -133,5 +168,102 @@ describe("WeChat account helpers", () => {
     await expect(zip.file("_errors.md")?.async("string")).resolves.toContain(
       "安全验证"
     );
+  });
+});
+
+describe("WeChat appmsgpublish 频控处理", () => {
+  const credentials = { cookie: "cookie", token: "token" };
+
+  test("遇到 freq control 会退避重试，成功后继续抓取", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(freqControlResponse())
+      .mockResolvedValueOnce(jsonResponse(pagePayload(["a", "b"])));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const articles = await fetchWechatAccountArticles({
+      ...credentials,
+      accountId: "Mzk5MDcyODQ2Mw==",
+      intervalMs: 0,
+      limit: 2,
+      maxRetries: 2,
+      retryBaseMs: 0
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(articles.map((article) => article.title)).toEqual(["a", "b"]);
+  });
+
+  test("重试耗尽后抛出包含 200013 说明的错误", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(freqControlResponse()));
+
+    await expect(
+      fetchWechatAccountArticles({
+        ...credentials,
+        accountId: "Mzk5MDcyODQ2Mw==",
+        intervalMs: 0,
+        maxRetries: 1,
+        retryBaseMs: 0
+      })
+    ).rejects.toThrow(/200013/);
+  });
+
+  test("登录态失效（200003）不重试，提示重新登录", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ base_resp: { err_msg: "invalid session", ret: 200003 } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchWechatAccountArticles({
+        ...credentials,
+        accountId: "Mzk5MDcyODQ2Mw==",
+        intervalMs: 0,
+        maxRetries: 3,
+        retryBaseMs: 0
+      })
+    ).rejects.toThrow(WechatApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("中途持续限流时降级返回已抓到的部分列表", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(pagePayload(["a", "b"], 10)))
+      .mockResolvedValue(freqControlResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    const warnings: string[] = [];
+
+    const articles = await fetchWechatAccountArticles({
+      ...credentials,
+      accountId: "Mzk5MDcyODQ2Mw==",
+      intervalMs: 0,
+      limit: 10,
+      maxRetries: 0,
+      onWarning: (message) => warnings.push(message),
+      pageSize: 2
+    });
+
+    expect(articles.map((article) => article.title)).toEqual(["a", "b"]);
+    expect(warnings.join("\n")).toContain("第 2 页中断");
+  });
+
+  test("分页之间按配置的间隔限速", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(pagePayload(["a", "b"], 10)))
+      .mockResolvedValueOnce(jsonResponse(pagePayload(["c"], 10)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const startedAt = Date.now();
+    await fetchWechatAccountArticles({
+      ...credentials,
+      accountId: "Mzk5MDcyODQ2Mw==",
+      intervalMs: 120,
+      limit: 10,
+      pageSize: 2
+    });
+
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(100);
   });
 });

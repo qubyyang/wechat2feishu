@@ -1,6 +1,6 @@
 # W2F Vault
 
-Self-hosted Wechat2feishu clone for personal use. Paste a WeChat public account article link, clean the article into Markdown, import it into Feishu Docs or download it locally, and keep a local transfer history.
+Self-hosted Wechat2feishu tool. Paste a WeChat public account article link, clean the article into Markdown, import it into Feishu Docs or download it locally; it also supports batch-fetching all published articles of a public account by its ID and packaging them as a Markdown zip.
 
 中文文档：[README.md](./README.md)
 
@@ -9,6 +9,12 @@ Self-hosted Wechat2feishu clone for personal use. Paste a WeChat public account 
 中文：自托管的微信公众号文章归档工具，支持单篇文章导出 Markdown、导入飞书文档、提取公众号 ID，并按公众号 ID 批量导出历史文章为 Markdown zip。
 
 English: A self-hosted WeChat public account article archiver that exports articles to Markdown, imports them into Feishu Docs, extracts public account IDs, and batch-downloads account articles as Markdown zip files.
+
+## Screenshot
+
+The local app looks like this:
+
+![W2F Vault screenshot](./resources/web.png)
 
 ## Features
 
@@ -35,6 +41,13 @@ W2F_HISTORY_PATH=./data/history.json
 W2F_CHROME_EXECUTABLE_PATH=
 W2F_WECHAT_MP_TOKEN=
 W2F_WECHAT_MP_COOKIE=
+
+# Fetch rate limiting. Defaults follow a "better slow than blocked" policy and usually need no changes.
+W2F_WECHAT_LIST_INTERVAL_MS=3000      # Interval between article-list pages
+W2F_WECHAT_LIST_PAGE_SIZE=5           # Articles per page, 1..20
+W2F_WECHAT_ARTICLE_INTERVAL_MS=1200   # Interval between article body fetches
+W2F_WECHAT_MAX_RETRIES=3              # Retries after hitting freq control
+W2F_WECHAT_RETRY_BASE_MS=6000         # Backoff base; actual wait is base × 2^n
 ```
 
 2. In Feishu Open Platform, grant your custom app these permissions:
@@ -115,7 +128,8 @@ Open `http://localhost:3000`.
 - Pasting a WeChat article link can extract the public account ID (`__biz`). Short `/s/...` links are fetched once so the ID can be read from the article HTML.
 - Batch account export uses WeChat's `appmsgpublish` article-list endpoint, similar to `wechat-article-exporter`. It requires an authenticated `mp.weixin.qq.com` session: copy the `token` query value into `W2F_WECHAT_MP_TOKEN` and the browser request `Cookie` header into `W2F_WECHAT_MP_COOKIE`. These credentials expire and only enable listing article URLs; each article is still converted with the local Markdown pipeline.
 - The Feishu transfer button is shown only when `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, and `FEISHU_FOLDER_TOKEN` are all configured. Otherwise the app stays in local-export mode.
-- WeChat sometimes returns a safety verification page to server-side fetches. If that happens locally, set `W2F_CHROME_EXECUTABLE_PATH` to a Chrome/Chromium executable path to enable the browser fallback.
+- WeChat sometimes returns a safety verification page to server-side fetches. If that happens locally, set `W2F_CHROME_EXECUTABLE_PATH` to a Chrome/Chromium executable path to enable the browser fallback. If the configured path does not exist, the app prints a warning and falls back to auto-detected browsers.
+- Batch export is rate-limited by default: a 3s interval between list pages and a 1.2s interval between article fetches, with automatic exponential backoff on `freq control`. If rate-limited midway through the list, the app returns the articles fetched so far instead of failing the whole batch.
 - Transfer history is stored locally at `W2F_HISTORY_PATH`.
 
 ## Batch Export Flow
@@ -131,6 +145,28 @@ The downloaded zip contains:
 - `001-title.md`, `002-title.md`, etc. for successfully converted articles.
 - `manifest.json` with source URLs and conversion status.
 - `_errors.md` when some articles failed because of safety verification, removed articles, or network errors.
+
+## Troubleshooting `freq control`
+
+If batch export fails with `freq control`, WeChat's `/cgi-bin/appmsgpublish` endpoint has hit its rate limit (`ret=200013`). This is a WeChat quota, not a code error. Run the self-check script first to see which case you are in:
+
+```bash
+npm run probe:wechat -- MzI3MzYwODk2MQ==
+```
+
+The script validates your login session first, then probes the article-list endpoint. There are three outcomes:
+
+| Output | Meaning | Action |
+| --- | --- | --- |
+| Login invalid, `searchbiz` returns `200003` | Cookie or token has expired | Log in to the platform again and update `W2F_WECHAT_MP_TOKEN` and `W2F_WECHAT_MP_COOKIE` in `.env` |
+| Login valid, but `appmsgpublish` returns `200013` | The endpoint's independent quota is exhausted | Wait for cooldown (usually minutes; severe cases last until the next daily quota reset). Do not retry repeatedly |
+| Both pass | Normal | Verify with a small `limit` (e.g. 5) first, then increase gradually |
+
+Notes:
+
+- The `appmsgpublish` rate-limit quota is independent of other admin endpoints such as `searchbiz` and `home`, so a valid login does not mean the list endpoint is available.
+- Sending more requests during cooldown extends the cooldown. Both the script and the app back off automatically; do not retry manually.
+- Larger exports mean more list requests: 100 articles = 20 list requests + 100 article fetches. Export in batches of 20 or fewer.
 
 ## Verification
 

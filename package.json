@@ -20,6 +20,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "probe:wechat": "node --env-file=.env scripts/probe-wechat.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

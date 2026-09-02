@@ -32,6 +32,48 @@ const noiseSelectors = [
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9+/_=-]{8,}$/;
 const APPMSGPUBLISH_ENDPOINT = "https://mp.weixin.qq.com/cgi-bin/appmsgpublish";
 
+/** 微信后台返回码：调用太频繁 */
+const RET_FREQ_CONTROL = 200013;
+/** 微信后台返回码：登录态失效 */
+const RET_INVALID_SESSION = 200003;
+
+export class WechatApiError extends Error {
+  readonly ret: number;
+
+  constructor(ret: number, message: string) {
+    super(message);
+    this.name = "WechatApiError";
+    this.ret = ret;
+  }
+
+  /** 仅频率限制值得重试；登录态失效重试无意义 */
+  get retriable(): boolean {
+    return this.ret === RET_FREQ_CONTROL || this.ret < 0;
+  }
+}
+
+function describeWechatApiError(ret: number, errMsg?: string): string {
+  if (ret === RET_INVALID_SESSION) {
+    return "微信后台登录态已失效（invalid session / 200003）。请重新登录 mp.weixin.qq.com，复制新的 URL token 与 Cookie 到 .env 的 W2F_WECHAT_MP_TOKEN / W2F_WECHAT_MP_COOKIE。";
+  }
+
+  if (ret === RET_FREQ_CONTROL) {
+    return "微信接口触发频率限制（freq control / 200013）。这不是代码报错，是微信对 /cgi-bin/appmsgpublish 的独立配额被耗尽：请降低批量导出的篇数与频率，等待冷却（通常数分钟，严重时到次日额度重置）后重试。可用 `npm run probe:wechat` 查询当前是否仍在限流。";
+  }
+
+  return errMsg?.trim() || `公众号文章列表获取失败（ret=${ret}）。`;
+}
+
+export function sleep(ms: number): Promise<void> {
+  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
+}
+
+/** 指数退避 + 抖动，避免多任务同时重试再次撞上配额 */
+function backoffDelay(attempt: number, baseMs: number): number {
+  if (baseMs <= 0) return 0;
+  return Math.round(baseMs * 2 ** attempt * (0.75 + Math.random() * 0.5));
+}
+
 function readMetaVar(html: string, name: string): string | undefined {
   const match = html.match(new RegExp(`var\\s+${name}\\s*=\\s*['"]([^'"]*)['"]`));
   return match?.[1] ? compactWhitespace(decodeHtmlEntities(match[1])) : undefined;
@@ -109,8 +151,16 @@ async function fetchWechatHtmlWithBrowser(url: string): Promise<string> {
 
 function resolveChromeExecutable(): string | undefined {
   const configured = process.env.W2F_CHROME_EXECUTABLE_PATH?.trim();
+
   if (configured) {
-    return configured;
+    // 配置错路径时（例如误填成飞书 token）不要静默失败，回退到自动探测
+    if (existsSync(configured)) {
+      return configured;
+    }
+
+    console.warn(
+      `[w2f] W2F_CHROME_EXECUTABLE_PATH 指向的路径不存在：${configured}，改用自动探测的浏览器。`
+    );
   }
 
   const candidates = [
@@ -125,32 +175,50 @@ function resolveChromeExecutable(): string | undefined {
   return candidates.find((candidate) => existsSync(candidate));
 }
 
-async function importPlaywright(): Promise<{
-  chromium: {
-    launch(options: {
-      executablePath: string;
-      headless: boolean;
-    }): Promise<{
-      close(): Promise<void>;
-      newPage(options: {
-        userAgent: string;
-      }): Promise<{
-        content(): Promise<string>;
-        goto(
-          url: string,
-          options: { timeout: number; waitUntil: "domcontentloaded" }
-        ): Promise<unknown>;
-        waitForTimeout(timeout: number): Promise<void>;
-      }>;
-    }>;
+type PlaywrightPage = {
+  content(): Promise<string>;
+  goto(
+    url: string,
+    options: { timeout: number; waitUntil: "domcontentloaded" }
+  ): Promise<unknown>;
+  waitForTimeout(timeout: number): Promise<void>;
+};
+
+type PlaywrightBrowser = {
+  close(): Promise<void>;
+  newPage(options: { userAgent: string }): Promise<PlaywrightPage>;
+};
+
+type PlaywrightChromium = {
+  launch(options: { executablePath: string; headless: boolean }): Promise<PlaywrightBrowser>;
+};
+
+/**
+ * playwright-core 是 CJS 包，Node 原生动态 import 时拿不到具名导出 `chromium`，
+ * 只能从 default 上取。两种形状都要兼容，否则浏览器抓取回退会直接抛 TypeError。
+ */
+export function resolvePlaywrightChromium(module: unknown): PlaywrightChromium | undefined {
+  const candidate = (module ?? {}) as {
+    chromium?: PlaywrightChromium;
+    default?: { chromium?: PlaywrightChromium };
   };
-}> {
+
+  return candidate.chromium ?? candidate.default?.chromium;
+}
+
+async function importPlaywright(): Promise<{ chromium: PlaywrightChromium }> {
   const dynamicImport = new Function(
     "specifier",
     "return import(specifier)"
   ) as (specifier: string) => Promise<unknown>;
 
-  return dynamicImport("playwright-core") as ReturnType<typeof importPlaywright>;
+  const chromium = resolvePlaywrightChromium(await dynamicImport("playwright-core"));
+
+  if (!chromium) {
+    throw new Error("未能加载 playwright-core，请确认依赖已安装。");
+  }
+
+  return { chromium };
 }
 
 export function extractWechatArticle(html: string, sourceUrl: string): WechatArticle {
@@ -322,27 +390,61 @@ export type WechatAccountCredentials = {
 
 export type FetchWechatAccountArticlesOptions = WechatAccountCredentials & {
   accountId: string;
+  intervalMs?: number;
   limit?: number;
+  maxRetries?: number;
+  onWarning?: (message: string) => void;
+  pageSize?: number;
+  retryBaseMs?: number;
 };
 
 export async function fetchWechatAccountArticles({
   accountId,
   cookie,
+  intervalMs = 3000,
   limit = 20,
+  maxRetries = 3,
+  onWarning,
+  pageSize = 5,
+  retryBaseMs = 6000,
   token
 }: FetchWechatAccountArticlesOptions): Promise<WechatPublishedArticle[]> {
   const fakeid = assertWechatAccountId(accountId);
   const max = clampArticleLimit(limit);
+  const size = clampPageSize(pageSize);
+  const pageCap = Math.ceil(max / size) + 5;
   const articles: WechatPublishedArticle[] = [];
   const seen = new Set<string>();
 
-  for (let begin = 0; articles.length < max; begin += 5) {
-    const payload = await fetchWechatPublishPage({
-      begin,
-      cookie,
-      fakeid,
-      token
-    });
+  for (let page = 0; page < pageCap && articles.length < max; page += 1) {
+    if (page > 0) {
+      await sleep(intervalMs);
+    }
+
+    let payload: unknown;
+
+    try {
+      payload = await fetchWechatPublishPageWithRetry({
+        begin: page * size,
+        cookie,
+        count: size,
+        fakeid,
+        maxRetries,
+        onWarning,
+        retryBaseMs,
+        token
+      });
+    } catch (error) {
+      // 已经拿到部分列表时降级返回，避免整批归零
+      if (!articles.length) throw error;
+
+      const message = error instanceof Error ? error.message : "未知错误";
+      onWarning?.(
+        `文章列表在第 ${page + 1} 页中断（${message}）。已保留前 ${articles.length} 篇。`
+      );
+      break;
+    }
+
     const pageArticles = parseWechatPublishArticles(payload);
 
     for (const article of pageArticles) {
@@ -354,10 +456,47 @@ export async function fetchWechatAccountArticles({
       if (articles.length >= max) break;
     }
 
-    if (pageArticles.length < 5) break;
+    if (pageArticles.length < size) break;
   }
 
   return articles;
+}
+
+function clampPageSize(value: number): number {
+  if (!Number.isFinite(value)) return 5;
+  return Math.min(Math.max(Math.floor(value), 1), 20);
+}
+
+async function fetchWechatPublishPageWithRetry({
+  maxRetries,
+  onWarning,
+  retryBaseMs,
+  ...options
+}: Parameters<typeof fetchWechatPublishPage>[0] & {
+  maxRetries: number;
+  onWarning?: (message: string) => void;
+  retryBaseMs: number;
+}): Promise<unknown> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    if (attempt > 0) {
+      const delay = backoffDelay(attempt - 1, retryBaseMs);
+      onWarning?.(`微信接口限流，${Math.round(delay / 1000)}s 后第 ${attempt + 1} 次重试…`);
+      await sleep(delay);
+    }
+
+    try {
+      return await fetchWechatPublishPage(options);
+    } catch (error) {
+      lastError = error;
+
+      if (!(error instanceof WechatApiError) || !error.retriable) throw error;
+      if (attempt === maxRetries) throw error;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("公众号文章列表获取失败。");
 }
 
 function clampArticleLimit(value: number): number {
@@ -368,11 +507,13 @@ function clampArticleLimit(value: number): number {
 async function fetchWechatPublishPage({
   begin,
   cookie,
+  count = 5,
   fakeid,
   token
 }: {
   begin: number;
   cookie: string;
+  count?: number;
   fakeid: string;
   token: string;
 }): Promise<unknown> {
@@ -386,7 +527,7 @@ async function fetchWechatPublishPage({
   const params: Record<string, string> = {
     ajax: "1",
     begin: String(begin),
-    count: "5",
+    count: String(count),
     f: "json",
     fakeid,
     free_publish_type: "1",
@@ -407,12 +548,16 @@ async function fetchWechatPublishPage({
     headers: {
       "accept-language": "zh-CN,zh;q=0.9,en;q=0.6",
       cookie,
+      referer: url.toString(),
       "user-agent": WECHAT_UA
     }
   });
 
   if (!response.ok) {
-    throw new Error(`公众号文章列表获取失败：HTTP ${response.status}`);
+    throw new WechatApiError(
+      response.status === 429 ? RET_FREQ_CONTROL : -1,
+      `公众号文章列表获取失败：HTTP ${response.status}`
+    );
   }
 
   const payload = (await response.json()) as {
@@ -421,7 +566,7 @@ async function fetchWechatPublishPage({
   const ret = payload.base_resp?.ret;
 
   if (typeof ret === "number" && ret !== 0) {
-    throw new Error(payload.base_resp?.err_msg ?? "公众号文章列表获取失败。");
+    throw new WechatApiError(ret, describeWechatApiError(ret, payload.base_resp?.err_msg));
   }
 
   return payload;
@@ -519,12 +664,14 @@ export type BuildWechatAccountMarkdownZipOptions = {
   accountId: string;
   articles: WechatPublishedArticle[];
   convert?: typeof fetchAndConvertWechatArticle;
+  intervalMs?: number;
 };
 
 export async function buildWechatAccountMarkdownZip({
   accountId,
   articles,
-  convert = fetchAndConvertWechatArticle
+  convert = fetchAndConvertWechatArticle,
+  intervalMs = 1200
 }: BuildWechatAccountMarkdownZipOptions): Promise<{
   failureCount: number;
   successCount: number;
@@ -541,6 +688,11 @@ export async function buildWechatAccountMarkdownZip({
   }> = [];
 
   for (const [index, listedArticle] of articles.entries()) {
+    // 正文页同样有频控，逐篇限速，首篇不延迟
+    if (index > 0) {
+      await sleep(intervalMs);
+    }
+
     try {
       const { article, markdown } = await convert(listedArticle.url);
       const filename = numberedMarkdownFilename(index + 1, article.title);
