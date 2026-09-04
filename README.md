@@ -1,12 +1,12 @@
 # W2F Vault
 
-自托管的 Wechat2feishu 工具。粘贴微信公众号文章链接后，可以清洗正文、生成 Markdown、导入飞书文档，或直接下载到本地；也支持通过公众号 ID 批量获取该账号发布的文章并打包为 Markdown zip。
+自托管的 Wechat2feishu 工具。粘贴微信公众号文章链接后，可以清洗正文、生成 Markdown 或 HTML、导入飞书文档，或直接下载到本地；也支持通过公众号 ID 批量获取该账号发布的文章并打包为 Markdown / HTML zip。
 
 English documentation: [README.en.md](./README.en.md)
 
 ## Description
 
-中文：自托管的微信公众号文章归档工具，支持单篇文章导出 Markdown、导入飞书文档、提取公众号 ID，并按公众号 ID 批量导出历史文章为 Markdown zip。
+中文：自托管的微信公众号文章归档工具，支持单篇文章导出 Markdown / HTML、导入飞书文档、提取公众号 ID，并按公众号 ID 批量导出历史文章为 Markdown / HTML zip。
 
 English: A self-hosted WeChat public account article archiver that exports articles to Markdown, imports them into Feishu Docs, extracts public account IDs, and batch-downloads account articles as Markdown zip files.
 
@@ -18,10 +18,10 @@ English: A self-hosted WeChat public account article archiver that exports artic
 
 ## 功能
 
-- 单篇公众号文章链接转 Markdown。
+- 单篇公众号文章链接转 Markdown 或 HTML（HTML 为带阅读样式、可直接在浏览器打开的独立文档）。
 - 单篇公众号文章导入飞书文档。
 - 从公众号文章链接提取公众号 ID（文章 URL 中的 `__biz`）。
-- 使用公众号 ID 批量获取文章列表，并将文章内容导出为 Markdown zip。
+- 使用公众号 ID 批量获取文章列表，并将文章内容导出为 Markdown 或 HTML zip。
 - 本地保存处理历史。
 
 ## 项目状态
@@ -48,6 +48,11 @@ W2F_WECHAT_LIST_PAGE_SIZE=5           # 每页条数，1..20
 W2F_WECHAT_ARTICLE_INTERVAL_MS=1200   # 逐篇抓取正文之间的间隔
 W2F_WECHAT_MAX_RETRIES=3              # 触发频控后的重试次数
 W2F_WECHAT_RETRY_BASE_MS=6000         # 退避基数，实际等待为基数 × 2^n
+
+# 正文资源本地化（批量导出时把图片一并打进 ZIP 的 assets/ 目录）
+W2F_ASSET_INTERVAL_MS=300             # 资源逐个下载之间的间隔
+W2F_ASSET_MAX_BYTES=20971520          # 单个资源体积上限，默认 20MB，超限跳过
+W2F_DOWNLOAD_MEDIA=false              # 是否连音频/视频一起下载，默认只下图片
 ```
 
 ## 获取飞书配置
@@ -156,12 +161,13 @@ http://localhost:3000
 2. 点击“提取公众号 ID”。
 3. 确认公众号 ID 自动填入下方输入框。
 4. 设置要导出的文章数量，范围是 `1..100`。
-5. 点击“下载 ZIP”。
+5. 选择导出格式（Markdown 或 HTML，与单篇导出共用同一设置）。
+6. 点击“下载 ZIP”。
 
 导出的 zip 包包含：
 
-- `001-标题.md`、`002-标题.md` 等成功导出的 Markdown 文件。
-- `manifest.json`，记录每篇文章的 URL 和导出状态。
+- `001-标题.md`（或 `001-标题.html`）等成功导出的文件，扩展名与所选格式一致。
+- `manifest.json`，记录每篇文章的 URL、导出状态与本次导出格式。
 - `_errors.md`，当部分文章因安全验证、文章删除或网络错误失败时会生成。
 
 ## freq control（频控）排查
@@ -203,7 +209,7 @@ http://localhost:3000
 
 - 不使用 OAuth。飞书导入使用 `.env` 中的 `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET`。
 - 本地 Markdown 导出不需要飞书配置。
-- 飞书配置不完整时，页面只启用本地 Markdown 导出。
+- 飞书配置不完整时，页面只启用本地导出（Markdown / HTML）。
 - 微信可能向服务端抓取返回安全验证页。遇到这种情况时，可以在 `.env` 中填写 `W2F_CHROME_EXECUTABLE_PATH`，启用浏览器抓取回退。
 - 批量导出默认限速：列表分页间隔 3s、正文间隔 1.2s，遇到 `freq control` 自动指数退避重试。列表中途被限流时会返回已抓到的部分文章，而不是整批失败。
 - 处理历史保存在 `W2F_HISTORY_PATH`。

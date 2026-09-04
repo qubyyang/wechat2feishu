@@ -8,6 +8,7 @@ out/
 # production and test output
 dist/
 coverage/
+*.tsbuildinfo
 
 # local environment
 .env
@@ -29,3 +30,4 @@ pnpm-debug.log*
 
 # hosting
 .vercel/
+.workbuddy

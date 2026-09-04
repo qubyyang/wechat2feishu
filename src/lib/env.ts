@@ -1,7 +1,10 @@
 export type ServerConfig = {
   appId: string;
   appSecret: string;
+  assetIntervalMs: number;
+  assetMaxBytes: number;
   baseUrl: string;
+  downloadMedia: boolean;
   folderToken: string;
   historyPath: string;
   wechatArticleIntervalMs: number;
@@ -19,11 +22,25 @@ export type ServerConfig = {
  */
 export const WECHAT_PACING_DEFAULTS = {
   articleIntervalMs: 1200,
+  assetIntervalMs: 300,
   listIntervalMs: 3000,
   listPageSize: 5,
   maxRetries: 3,
   retryBaseMs: 6000
 };
+
+/** 单个资源文件体积上限，默认 20MB */
+export const ASSET_MAX_BYTES_DEFAULT = 20 * 1024 * 1024;
+
+export function readBooleanEnv(name: string, fallback: boolean): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+
+  if (!value) return fallback;
+  if (["1", "on", "true", "yes"].includes(value)) return true;
+  if (["0", "false", "no", "off"].includes(value)) return false;
+
+  return fallback;
+}
 
 export function readNumberEnv(
   name: string,
@@ -41,7 +58,20 @@ export function getServerConfig(): ServerConfig {
   return {
     appId: process.env.FEISHU_APP_ID ?? "",
     appSecret: process.env.FEISHU_APP_SECRET ?? "",
+    assetIntervalMs: readNumberEnv(
+      "W2F_ASSET_INTERVAL_MS",
+      WECHAT_PACING_DEFAULTS.assetIntervalMs,
+      0,
+      30_000
+    ),
+    assetMaxBytes: readNumberEnv(
+      "W2F_ASSET_MAX_BYTES",
+      ASSET_MAX_BYTES_DEFAULT,
+      1024,
+      200 * 1024 * 1024
+    ),
     baseUrl: process.env.FEISHU_APP_BASE_URL ?? "https://open.feishu.cn",
+    downloadMedia: readBooleanEnv("W2F_DOWNLOAD_MEDIA", false),
     folderToken: process.env.FEISHU_FOLDER_TOKEN ?? "",
     historyPath: process.env.W2F_HISTORY_PATH ?? "./data/history.json",
     wechatArticleIntervalMs: readNumberEnv(

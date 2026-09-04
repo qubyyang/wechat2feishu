@@ -1,8 +1,10 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  ASSET_MAX_BYTES_DEFAULT,
   assertFeishuConfig,
   getConfigStatus,
+  readBooleanEnv,
   readNumberEnv,
   WECHAT_PACING_DEFAULTS
 } from "@/lib/env";
@@ -10,7 +12,10 @@ import {
 const completeConfig = {
   appId: "cli_demo",
   appSecret: "secret",
+  assetIntervalMs: WECHAT_PACING_DEFAULTS.assetIntervalMs,
+  assetMaxBytes: ASSET_MAX_BYTES_DEFAULT,
   baseUrl: "https://open.feishu.cn",
+  downloadMedia: false,
   folderToken: "fld_demo",
   historyPath: "./data/history.json",
   wechatArticleIntervalMs: WECHAT_PACING_DEFAULTS.articleIntervalMs,
@@ -59,5 +64,16 @@ describe("抓限限速参数", () => {
     expect(WECHAT_PACING_DEFAULTS.listPageSize).toBeGreaterThanOrEqual(1);
     expect(WECHAT_PACING_DEFAULTS.listPageSize).toBeLessThanOrEqual(20);
     expect(WECHAT_PACING_DEFAULTS.listIntervalMs).toBeGreaterThan(0);
+  });
+
+  test("资源下载开关按字符串取值解析，非法值回落默认", () => {
+    expect(readBooleanEnv("W2F_BOOL_DEMO", false)).toBe(false);
+    process.env.W2F_BOOL_DEMO = "true";
+    expect(readBooleanEnv("W2F_BOOL_DEMO", false)).toBe(true);
+    process.env.W2F_BOOL_DEMO = "0";
+    expect(readBooleanEnv("W2F_BOOL_DEMO", true)).toBe(false);
+    process.env.W2F_BOOL_DEMO = "maybe";
+    expect(readBooleanEnv("W2F_BOOL_DEMO", true)).toBe(true);
+    delete process.env.W2F_BOOL_DEMO;
   });
 });

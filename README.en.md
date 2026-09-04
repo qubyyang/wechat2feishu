@@ -1,14 +1,14 @@
 # W2F Vault
 
-Self-hosted Wechat2feishu tool. Paste a WeChat public account article link, clean the article into Markdown, import it into Feishu Docs or download it locally; it also supports batch-fetching all published articles of a public account by its ID and packaging them as a Markdown zip.
+Self-hosted Wechat2feishu tool. Paste a WeChat public account article link, clean the article into Markdown or HTML, import it into Feishu Docs or download it locally; it also supports batch-fetching all published articles of a public account by its ID and packaging them as a Markdown / HTML zip.
 
 中文文档：[README.md](./README.md)
 
 ## Description
 
-中文：自托管的微信公众号文章归档工具，支持单篇文章导出 Markdown、导入飞书文档、提取公众号 ID，并按公众号 ID 批量导出历史文章为 Markdown zip。
+中文：自托管的微信公众号文章归档工具，支持单篇文章导出 Markdown / HTML、导入飞书文档、提取公众号 ID，并按公众号 ID 批量导出历史文章为 Markdown / HTML zip。
 
-English: A self-hosted WeChat public account article archiver that exports articles to Markdown, imports them into Feishu Docs, extracts public account IDs, and batch-downloads account articles as Markdown zip files.
+English: A self-hosted WeChat public account article archiver that exports articles to Markdown or HTML, imports them into Feishu Docs, extracts public account IDs, and batch-downloads account articles as Markdown / HTML zip files.
 
 ## Screenshot
 
@@ -18,10 +18,10 @@ The local app looks like this:
 
 ## Features
 
-- Export a single WeChat public account article to Markdown.
+- Export a single WeChat public account article to Markdown or HTML (the HTML output is a standalone, styled document that opens directly in a browser).
 - Import a single WeChat public account article into Feishu Docs.
 - Extract the public account ID (`__biz`) from an article link.
-- Batch fetch articles by public account ID and download them as a Markdown zip.
+- Batch fetch articles by public account ID and download them as a Markdown or HTML zip.
 - Keep a local transfer history.
 
 ## Project Status
@@ -48,6 +48,11 @@ W2F_WECHAT_LIST_PAGE_SIZE=5           # Articles per page, 1..20
 W2F_WECHAT_ARTICLE_INTERVAL_MS=1200   # Interval between article body fetches
 W2F_WECHAT_MAX_RETRIES=3              # Retries after hitting freq control
 W2F_WECHAT_RETRY_BASE_MS=6000         # Backoff base; actual wait is base × 2^n
+
+# Asset localization (batch export bundles images into the ZIP's assets/ folder)
+W2F_ASSET_INTERVAL_MS=300             # Delay between individual asset downloads
+W2F_ASSET_MAX_BYTES=20971520          # Per-asset size cap, 20MB by default; larger files are skipped
+W2F_DOWNLOAD_MEDIA=false              # Also download audio/video; images only by default
 ```
 
 2. In Feishu Open Platform, grant your custom app these permissions:
@@ -124,7 +129,7 @@ Open `http://localhost:3000`.
 ## Notes
 
 - No OAuth is used. The app talks to Feishu with `APP_ID` and `APP_SECRET` from `.env`.
-- Local Markdown export does not require Feishu credentials. It uses the same WeChat extraction and Markdown cleanup pipeline as Feishu import.
+- Local export (Markdown / HTML) does not require Feishu credentials. It uses the same WeChat extraction and cleanup pipeline as Feishu import. HTML preserves the original rich-text structure (bold, tables, images) for direct reading; Markdown is better for knowledge-base post-processing.
 - Pasting a WeChat article link can extract the public account ID (`__biz`). Short `/s/...` links are fetched once so the ID can be read from the article HTML.
 - Batch account export uses WeChat's `appmsgpublish` article-list endpoint, similar to `wechat-article-exporter`. It requires an authenticated `mp.weixin.qq.com` session: copy the `token` query value into `W2F_WECHAT_MP_TOKEN` and the browser request `Cookie` header into `W2F_WECHAT_MP_COOKIE`. These credentials expire and only enable listing article URLs; each article is still converted with the local Markdown pipeline.
 - The Feishu transfer button is shown only when `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, and `FEISHU_FOLDER_TOKEN` are all configured. Otherwise the app stays in local-export mode.

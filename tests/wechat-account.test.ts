@@ -2,7 +2,7 @@ import JSZip from "jszip";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
-  buildWechatAccountMarkdownZip,
+  buildWechatAccountZip,
   extractWechatAccountId,
   extractWechatAccountIdFromHtml,
   fetchWechatAccountArticles,
@@ -146,10 +146,11 @@ describe("WeChat account helpers", () => {
         markdown: "第三篇内容"
       });
 
-    const result = await buildWechatAccountMarkdownZip({
+    const result = await buildWechatAccountZip({
       accountId: "Mzk5MDcyODQ2Mw==",
       articles: parseWechatPublishArticles(publishResponse),
       convert,
+      downloadAssets: false,
       intervalMs: 0
     });
     const zip = await JSZip.loadAsync(result.zip);
@@ -168,6 +169,73 @@ describe("WeChat account helpers", () => {
     await expect(zip.file("_errors.md")?.async("string")).resolves.toContain(
       "安全验证"
     );
+  });
+
+  test("builds a zip of standalone html files when format is html", async () => {
+    const convert = vi.fn().mockResolvedValue({
+      article: {
+        html: "<p>正文内容</p>",
+        sourceUrl: "https://mp.weixin.qq.com/s/a",
+        title: "第一篇"
+      },
+      markdown: "不该被使用"
+    });
+
+    const result = await buildWechatAccountZip({
+      accountId: "Mzk5MDcyODQ2Mw==",
+      articles: parseWechatPublishArticles(publishResponse).slice(0, 1),
+      convert,
+      downloadAssets: false,
+      format: "html",
+      intervalMs: 0
+    });
+    const zip = await JSZip.loadAsync(result.zip);
+
+    expect(result.successCount).toBe(1);
+    expect(Object.keys(zip.files).sort()).toEqual([
+      "001-第一篇.html",
+      "manifest.json"
+    ]);
+    await expect(zip.file("001-第一篇.html")?.async("string")).resolves.toContain(
+      "<!doctype html>"
+    );
+    const manifest = JSON.parse(await zip.file("manifest.json")!.async("string"));
+    expect(manifest.format).toBe("html");
+    expect(manifest.items[0].filename).toBe("001-第一篇.html");
+  });
+
+  test("开启资源本地化时图片进 assets/ 目录且正文改为相对路径", async () => {
+    const convert = vi.fn().mockResolvedValue({
+      article: {
+        html: '<p><img src="https://mmbiz.qpic.cn/pic?wx_fmt=png" /></p>',
+        sourceUrl: "https://mp.weixin.qq.com/s/a",
+        title: "第一篇"
+      },
+      markdown: "占位"
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        arrayBuffer: async () => new TextEncoder().encode("png-bytes").buffer,
+        headers: { get: (name: string) => (name === "content-type" ? "image/png" : null) },
+        ok: true,
+        status: 200
+      }))
+    );
+
+    const result = await buildWechatAccountZip({
+      accountId: "Mzk5MDcyODQ2Mw==",
+      articles: parseWechatPublishArticles(publishResponse).slice(0, 1),
+      assetIntervalMs: 0,
+      convert,
+      intervalMs: 0
+    });
+    const zip = await JSZip.loadAsync(result.zip);
+    const names = Object.keys(zip.files).sort();
+
+    expect(result.assetCount).toBeGreaterThanOrEqual(1);
+    expect(names.some((name) => /^assets\/[0-9a-f]{16}\.png$/.test(name))).toBe(true);
+    await expect(zip.file("001-第一篇.md")?.async("string")).resolves.toContain("./assets/");
   });
 });
 

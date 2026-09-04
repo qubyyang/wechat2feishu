@@ -37,13 +37,15 @@ type HistoryRecord = {
   id: string;
   sourceUrl: string;
   status: "failed" | "success";
-  target?: "feishu" | "markdown";
+  target?: "feishu" | "html" | "markdown";
   title: string;
 };
 
+type ExportFormat = "html" | "markdown";
+
 type PendingAction = "account-export" | "account-id" | "export" | "transfer";
 
-const pipeline = ["抓取正文", "清洗排版", "生成 Markdown", "归档或导出"];
+const pipeline = ["抓取正文", "清洗排版", "生成 Markdown/HTML", "归档或导出"];
 
 export function TransferConsole() {
   const [config, setConfig] = useState<ConfigStatus | null>(null);
@@ -53,6 +55,7 @@ export function TransferConsole() {
   const [accountId, setAccountId] = useState("");
   const [accountUrl, setAccountUrl] = useState("");
   const [batchLimit, setBatchLimit] = useState(20);
+  const [exportFormat, setExportFormat] = useState<ExportFormat>("markdown");
   const [url, setUrl] = useState("");
   const pending = pendingAction !== null;
   const canTransferToFeishu = Boolean(config?.ready);
@@ -122,7 +125,7 @@ export function TransferConsole() {
 
     try {
       const response = await fetch("/api/export", {
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ format: exportFormat, url }),
         headers: { "content-type": "application/json" },
         method: "POST"
       });
@@ -132,11 +135,12 @@ export function TransferConsole() {
       }
 
       const blob = await response.blob();
+      const extension = exportFormat === "html" ? "html" : "md";
       const filename =
         getFilenameFromDisposition(response.headers.get("content-disposition")) ??
-        "微信文章归档.md";
+        `微信文章归档.${extension}`;
       downloadBlob(blob, filename);
-      setMessage(`已导出 Markdown：${filename}`);
+      setMessage(`已导出 ${exportFormat === "html" ? "HTML" : "Markdown"}：${filename}`);
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "导出失败");
@@ -177,7 +181,7 @@ export function TransferConsole() {
 
     try {
       const response = await fetch("/api/account-export", {
-        body: JSON.stringify({ accountId, limit: batchLimit }),
+        body: JSON.stringify({ accountId, format: exportFormat, limit: batchLimit }),
         headers: { "content-type": "application/json" },
         method: "POST"
       });
@@ -191,7 +195,9 @@ export function TransferConsole() {
         getFilenameFromDisposition(response.headers.get("content-disposition")) ??
         "公众号文章.zip";
       downloadBlob(blob, filename);
-      setMessage(`已导出公众号 Markdown 压缩包：${filename}`);
+      setMessage(
+        `已导出公众号 ${exportFormat === "html" ? "HTML" : "Markdown"} 压缩包：${filename}`
+      );
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "批量导出失败");
@@ -301,9 +307,17 @@ export function TransferConsole() {
                   ) : (
                     <FileText size={18} />
                   )}
-                  导出 Markdown
+                  导出 {exportFormat === "html" ? "HTML" : "Markdown"}
                 </button>
               </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-500">
+                导出格式
+              </span>
+              <FormatPicker format={exportFormat} onChange={setExportFormat} />
+              <span className="text-xs text-stone-500">单篇导出与批量导出共用此格式</span>
             </div>
           </form>
 
@@ -352,7 +366,7 @@ export function TransferConsole() {
               </button>
             </div>
 
-            <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_120px_minmax(180px,.35fr)]">
+            <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_120px_130px_minmax(180px,.35fr)]">
               <div className="flex min-h-12 items-center gap-3 rounded-md border border-black/10 bg-white px-3">
                 <KeyRound className="shrink-0 text-stone-400" size={18} />
                 <input
@@ -370,6 +384,15 @@ export function TransferConsole() {
                 type="number"
                 value={batchLimit}
               />
+              <select
+                aria-label="批量导出格式"
+                className="h-12 rounded-md border border-black/10 bg-white px-3 text-sm outline-none"
+                onChange={(event) => setExportFormat(event.target.value as ExportFormat)}
+                value={exportFormat}
+              >
+                <option value="markdown">Markdown</option>
+                <option value="html">HTML</option>
+              </select>
               <button
                 className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(21,21,21,.12)] transition hover:-translate-y-0.5 hover:bg-[#2b2b2b] disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-stone-400"
                 disabled={pending || !accountId}
@@ -381,7 +404,7 @@ export function TransferConsole() {
                 ) : (
                   <Download size={17} />
                 )}
-                下载 ZIP
+                下载 ZIP（{exportFormat === "html" ? "HTML" : "MD"}）
               </button>
             </div>
           </section>
@@ -524,10 +547,46 @@ function StatusRow({ active, label }: { active: boolean; label: string }) {
   );
 }
 
+function FormatPicker({
+  format,
+  onChange
+}: {
+  format: ExportFormat;
+  onChange: (format: ExportFormat) => void;
+}) {
+  const options: Array<{ label: string; value: ExportFormat }> = [
+    { label: "Markdown", value: "markdown" },
+    { label: "HTML", value: "html" }
+  ];
+
+  return (
+    <div className="inline-flex rounded-md border border-black/10 bg-white p-0.5">
+      {options.map((option) => (
+        <button
+          className={`rounded px-3 py-1.5 text-xs font-semibold transition ${
+            format === option.value
+              ? "bg-ink text-white"
+              : "text-stone-500 hover:text-ink"
+          }`}
+          key={option.value}
+          onClick={() => onChange(option.value)}
+          type="button"
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function HistoryItem({ record }: { record: HistoryRecord }) {
-  const targetLabel = record.target === "markdown" ? "本地 Markdown" : "飞书文档";
-  const StatusIcon =
-    record.status === "success" && record.target === "markdown" ? FileText : Check;
+  const targetLabel =
+    record.target === "markdown"
+      ? "本地 Markdown"
+      : record.target === "html"
+        ? "本地 HTML"
+        : "飞书文档";
+  const StatusIcon = record.target === "feishu" ? Check : FileText;
   const content = (
     <div className="min-w-0 rounded-md border border-black/10 bg-[#fbfaf7] px-4 py-3 transition hover:bg-white">
       <div className="flex items-start justify-between gap-3">

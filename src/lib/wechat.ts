@@ -4,12 +4,18 @@ import { existsSync } from "node:fs";
 import sanitizeHtml from "sanitize-html";
 import TurndownService from "turndown";
 
+import { localizeArticleAssets } from "./assets";
+import { backoffDelay, sleep } from "./pacing";
 import {
   assertWechatArticleUrl,
   compactWhitespace,
-  safeMarkdownFilename
+  safeFilenameWithExtension
 } from "./safe";
-import type { WechatArticle, WechatPublishedArticle } from "./types";
+import type {
+  ExportFormat,
+  WechatArticle,
+  WechatPublishedArticle
+} from "./types";
 
 const WECHAT_UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.49";
@@ -64,15 +70,7 @@ function describeWechatApiError(ret: number, errMsg?: string): string {
   return errMsg?.trim() || `公众号文章列表获取失败（ret=${ret}）。`;
 }
 
-export function sleep(ms: number): Promise<void> {
-  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
-}
-
-/** 指数退避 + 抖动，避免多任务同时重试再次撞上配额 */
-function backoffDelay(attempt: number, baseMs: number): number {
-  if (baseMs <= 0) return 0;
-  return Math.round(baseMs * 2 ** attempt * (0.75 + Math.random() * 0.5));
-}
+export { sleep } from "./pacing";
 
 function readMetaVar(html: string, name: string): string | undefined {
   const match = html.match(new RegExp(`var\\s+${name}\\s*=\\s*['"]([^'"]*)['"]`));
@@ -324,6 +322,96 @@ export function articleToMarkdown(article: WechatArticle): string {
   ].filter(Boolean);
 
   return `${metadata.join("\n")}\n${body}\n`;
+}
+
+const HTML_EXPORT_STYLES = `
+      :root {
+        color-scheme: light dark;
+      }
+      body {
+        margin: 0;
+        padding: 2rem 1rem;
+        background: #faf9f6;
+        color: #262626;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        line-height: 1.75;
+      }
+      article {
+        max-width: 720px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.6rem;
+        line-height: 1.4;
+        margin: 0 0 0.75rem;
+      }
+      .meta {
+        color: #78716c;
+        font-size: 0.85rem;
+        margin: 0.25rem 0;
+      }
+      .meta a {
+        color: #57534e;
+      }
+      .content {
+        margin-top: 1.5rem;
+        overflow-wrap: break-word;
+      }
+      .content img {
+        max-width: 100%;
+        height: auto;
+      }
+      @media (prefers-color-scheme: dark) {
+        body {
+          background: #1c1c1c;
+          color: #e7e5e4;
+        }
+        .meta,
+        .meta a {
+          color: #a8a29e;
+        }
+      }
+`;
+
+function escapeHtmlText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** 生成可直接在浏览器打开的 standalone HTML 归档文档 */
+export function articleToHtml(article: WechatArticle): string {
+  const metaLines = [
+    article.author ? `作者：${escapeHtmlText(article.author)}` : undefined,
+    article.publishedAt ? `发布时间：${escapeHtmlText(article.publishedAt)}` : undefined
+  ].filter(Boolean);
+  const metaHtml = metaLines.length ? `<p class="meta">${metaLines.join(" · ")}</p>` : "";
+
+  return `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="source-url" content="${escapeHtmlText(article.sourceUrl)}" />
+    <title>${escapeHtmlText(article.title)}</title>
+    <style>${HTML_EXPORT_STYLES}    </style>
+  </head>
+  <body>
+    <article>
+      <h1>${escapeHtmlText(article.title)}</h1>
+      ${metaHtml}
+      <p class="meta"><a href="${escapeHtmlText(article.sourceUrl)}" target="_blank" rel="noreferrer">原文链接</a></p>
+      <div class="content">
+${article.html}
+      </div>
+    </article>
+  </body>
+</html>
+`;
 }
 
 export async function fetchAndConvertWechatArticle(url: string): Promise<{
@@ -660,26 +748,47 @@ function isWechatPublishedArticle(
   return Boolean(value.title && value.url);
 }
 
-export type BuildWechatAccountMarkdownZipOptions = {
+export type BuildWechatAccountZipOptions = {
   accountId: string;
   articles: WechatPublishedArticle[];
+  /** ZIP 内资源目录名 */
+  assetsDir?: string;
+  /** 资源下载间隔，独立于正文抓取间隔 */
+  assetIntervalMs?: number;
+  assetMaxBytes?: number;
   convert?: typeof fetchAndConvertWechatArticle;
+  /** 是否把正文图片等资源下载进 ZIP */
+  downloadAssets?: boolean;
+  downloadMedia?: boolean;
+  format?: ExportFormat;
   intervalMs?: number;
+  onWarning?: (message: string) => void;
 };
 
-export async function buildWechatAccountMarkdownZip({
+export async function buildWechatAccountZip({
   accountId,
   articles,
+  assetIntervalMs = 300,
+  assetMaxBytes = 20 * 1024 * 1024,
+  assetsDir = "assets",
   convert = fetchAndConvertWechatArticle,
-  intervalMs = 1200
-}: BuildWechatAccountMarkdownZipOptions): Promise<{
+  downloadAssets = true,
+  downloadMedia = false,
+  format = "markdown",
+  intervalMs = 1200,
+  onWarning
+}: BuildWechatAccountZipOptions): Promise<{
+  assetCount: number;
   failureCount: number;
   successCount: number;
   zip: Buffer;
 }> {
   const zip = new JSZip();
   const failures: Array<{ error: string; title: string; url: string }> = [];
+  const writtenAssets = new Set<string>();
   const manifest: Array<{
+    assetCount?: number;
+    coverPath?: string;
     filename?: string;
     publishedAt?: string;
     status: "failed" | "success";
@@ -694,10 +803,44 @@ export async function buildWechatAccountMarkdownZip({
     }
 
     try {
-      const { article, markdown } = await convert(listedArticle.url);
-      const filename = numberedMarkdownFilename(index + 1, article.title);
-      zip.file(filename, markdown);
+      const converted = await convert(listedArticle.url);
+      let article = converted.article;
+      let markdown = converted.markdown;
+      let coverPath: string | undefined;
+      let articleAssetCount = 0;
+
+      if (downloadAssets) {
+        const localized = await localizeArticleAssets({
+          article,
+          assetsDir,
+          cover: listedArticle.cover,
+          downloadMedia,
+          intervalMs: assetIntervalMs,
+          maxBytes: assetMaxBytes,
+          onWarning
+        });
+
+        article = localized.article;
+        // 只有正文确实被改写过才重新生成 Markdown，避免丢掉上游 convert 的产物
+        if (localized.article.html !== converted.article.html) {
+          markdown = articleToMarkdown(article);
+        }
+        coverPath = localized.coverPath;
+        articleAssetCount = localized.assets.length;
+
+        for (const asset of localized.assets) {
+          if (writtenAssets.has(asset.path)) continue;
+
+          writtenAssets.add(asset.path);
+          zip.file(asset.path, asset.data);
+        }
+      }
+
+      const filename = numberedArticleFilename(index + 1, article.title, format);
+      zip.file(filename, format === "html" ? articleToHtml(article) : markdown);
       manifest.push({
+        assetCount: articleAssetCount,
+        coverPath,
         filename,
         publishedAt: listedArticle.publishedAt,
         status: "success",
@@ -735,6 +878,9 @@ export async function buildWechatAccountMarkdownZip({
       {
         accountId: assertWechatAccountId(accountId),
         articleCount: articles.length,
+        assetCount: writtenAssets.size,
+        assetsDir: downloadAssets ? assetsDir : undefined,
+        format,
         generatedAt: new Date().toISOString(),
         items: manifest
       },
@@ -744,15 +890,20 @@ export async function buildWechatAccountMarkdownZip({
   );
 
   return {
+    assetCount: writtenAssets.size,
     failureCount: failures.length,
     successCount: manifest.filter((item) => item.status === "success").length,
     zip: await zip.generateAsync({ type: "nodebuffer" })
   };
 }
 
-function numberedMarkdownFilename(index: number, title: string): string {
-  const filename = safeMarkdownFilename(title);
-  const stem = filename.endsWith(".md") ? filename.slice(0, -3) : filename;
+function numberedArticleFilename(
+  index: number,
+  title: string,
+  format: ExportFormat
+): string {
+  const extension = format === "html" ? "html" : "md";
+  const filename = safeFilenameWithExtension(title, extension);
 
-  return `${String(index).padStart(3, "0")}-${stem}.md`;
+  return `${String(index).padStart(3, "0")}-${filename}`;
 }

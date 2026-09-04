@@ -1,9 +1,29 @@
+export type ExportFormat = "html" | "markdown";
+
 export type WechatArticle = {
   author?: string;
   html: string;
   publishedAt?: string;
   sourceUrl: string;
   title: string;
+};
+
+/** 已下载到本地、待写入 ZIP 的正文资源 */
+export type ArticleAsset = {
+  contentType?: string;
+  data: Buffer;
+  kind: "audio" | "image" | "video";
+  /** ZIP 内相对路径，例如 assets/ab12….jpg */
+  path: string;
+  sourceUrl: string;
+};
+
+export type LocalizedArticleAssets = {
+  /** 正文引用已改写为 ./assets/… 相对路径的文章 */
+  article: WechatArticle;
+  assets: ArticleAsset[];
+  coverPath?: string;
+  failures: Array<{ error: string; url: string }>;
 };
 
 export type WechatPublishedArticle = {
@@ -21,7 +41,7 @@ export type TransferHistoryRecord = {
   id: string;
   sourceUrl: string;
   status: "failed" | "success";
-  target?: "feishu" | "markdown";
+  target?: "feishu" | "html" | "markdown";
   title: string;
 };
 

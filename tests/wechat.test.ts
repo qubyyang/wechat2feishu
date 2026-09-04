@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  articleToHtml,
   articleToMarkdown,
   extractWechatArticle,
   resolvePlaywrightChromium
@@ -48,6 +49,33 @@ describe("WeChat article extraction", () => {
     expect(markdown).toContain("第一段正文，带有 **重点**。");
     expect(markdown).toContain("![产品截图](https://mmbiz.qpic.cn/mmbiz_png/example/640?wx_fmt=png)");
     expect(markdown).toContain("原文链接：https://mp.weixin.qq.com/s/demo");
+  });
+
+  test("renders a standalone html document with metadata and escaped title", () => {
+    const article = extractWechatArticle(sampleWechatHtml, "https://mp.weixin.qq.com/s/demo");
+    const html = articleToHtml({
+      ...article,
+      title: "标题<script>alert(1)</script>"
+    });
+
+    expect(html.startsWith("<!doctype html>")).toBe(true);
+    expect(html).toContain('<meta charset="utf-8" />');
+    expect(html).toContain("<title>标题&lt;script&gt;alert(1)&lt;/script&gt;</title>");
+    expect(html).toContain("作者：AI 编程瓜哥");
+    expect(html).toContain('href="https://mp.weixin.qq.com/s/demo"');
+    expect(html).toContain("第一段正文");
+    expect(html).not.toContain("<script>alert(1)");
+  });
+
+  test("omits the author line when metadata is missing", () => {
+    const html = articleToHtml({
+      html: "<p>正文</p>",
+      sourceUrl: "https://mp.weixin.qq.com/s/demo",
+      title: "无作者"
+    });
+
+    expect(html).not.toContain("作者：");
+    expect(html).toContain("正文");
   });
 });
 
