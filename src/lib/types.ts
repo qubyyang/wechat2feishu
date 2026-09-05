@@ -28,6 +28,8 @@ export type LocalizedArticleAssets = {
 
 export type WechatPublishedArticle = {
   cover?: string;
+  /** 列表接口未提供该字段时为 undefined（未知），不等同于「非原创」 */
+  isOriginal?: boolean;
   publishedAt?: string;
   title: string;
   url: string;

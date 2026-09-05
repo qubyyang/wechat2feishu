@@ -476,8 +476,20 @@ export type WechatAccountCredentials = {
   token: string;
 };
 
+export type WechatArticleFilter = {
+  /** 标题关键词，大小写不敏感；多个词之间是「且」的关系 */
+  keyword?: string;
+  /** 只保留原创文章。列表接口没标原创的条目会被剔除 */
+  originalOnly?: boolean;
+  /** 发布时间下界（含），ISO 字符串或 YYYY-MM-DD */
+  publishedAfter?: string;
+  /** 发布时间上界（含当天），ISO 字符串或 YYYY-MM-DD */
+  publishedBefore?: string;
+};
+
 export type FetchWechatAccountArticlesOptions = WechatAccountCredentials & {
   accountId: string;
+  filter?: WechatArticleFilter;
   intervalMs?: number;
   limit?: number;
   maxRetries?: number;
@@ -486,9 +498,58 @@ export type FetchWechatAccountArticlesOptions = WechatAccountCredentials & {
   retryBaseMs?: number;
 };
 
+/** 把 YYYY-MM-DD 或 ISO 串解析为毫秒时间戳；`endOfDay` 用于让上界包含当天 */
+export function parseFilterDate(
+  value: string | undefined,
+  endOfDay = false
+): number | undefined {
+  if (!value?.trim()) return undefined;
+
+  const trimmed = value.trim();
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(trimmed);
+  const parsed = new Date(dateOnly && endOfDay ? `${trimmed}T23:59:59.999Z` : trimmed);
+
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`无法解析日期：${value}。请使用 YYYY-MM-DD 或完整 ISO 时间。`);
+  }
+
+  return parsed.getTime();
+}
+
+export function matchesWechatArticleFilter(
+  article: WechatPublishedArticle,
+  filter: WechatArticleFilter | undefined
+): boolean {
+  if (!filter) return true;
+
+  if (filter.originalOnly && !article.isOriginal) return false;
+
+  const keyword = filter.keyword?.trim().toLowerCase();
+  if (keyword) {
+    const title = article.title.toLowerCase();
+    if (!keyword.split(/\s+/).every((token) => title.includes(token))) return false;
+  }
+
+  const after = parseFilterDate(filter.publishedAfter);
+  const before = parseFilterDate(filter.publishedBefore, true);
+
+  if (after === undefined && before === undefined) return true;
+
+  // 没有发布时间的条目无法判定，在启用了时间筛选时一律剔除，避免混入意外结果
+  if (!article.publishedAt) return false;
+
+  const publishedAt = new Date(article.publishedAt).getTime();
+  if (Number.isNaN(publishedAt)) return false;
+  if (after !== undefined && publishedAt < after) return false;
+  if (before !== undefined && publishedAt > before) return false;
+
+  return true;
+}
+
 export async function fetchWechatAccountArticles({
   accountId,
   cookie,
+  filter,
   intervalMs = 3000,
   limit = 20,
   maxRetries = 3,
@@ -500,9 +561,14 @@ export async function fetchWechatAccountArticles({
   const fakeid = assertWechatAccountId(accountId);
   const max = clampArticleLimit(limit);
   const size = clampPageSize(pageSize);
-  const pageCap = Math.ceil(max / size) + 5;
+  // 筛选会让命中率下降，允许多翻几页；但仍设硬上限，避免为一个空筛选把配额翻完
+  const pageCap = filter
+    ? Math.ceil(max / size) + 20
+    : Math.ceil(max / size) + 5;
+  const publishedAfter = parseFilterDate(filter?.publishedAfter);
   const articles: WechatPublishedArticle[] = [];
   const seen = new Set<string>();
+  let scanned = 0;
 
   for (let page = 0; page < pageCap && articles.length < max; page += 1) {
     if (page > 0) {
@@ -539,9 +605,19 @@ export async function fetchWechatAccountArticles({
       if (seen.has(article.url)) continue;
 
       seen.add(article.url);
+      scanned += 1;
+
+      if (!matchesWechatArticleFilter(article, filter)) continue;
+
       articles.push(article);
 
       if (articles.length >= max) break;
+    }
+
+    // 列表按发布时间倒序，整页都早于时间下界时继续翻页只会浪费配额
+    if (publishedAfter !== undefined && isPageEntirelyBefore(pageArticles, publishedAfter)) {
+      onWarning?.(`已翻到早于起始日期的文章，提前结束列表抓取（共扫描 ${scanned} 篇）。`);
+      break;
     }
 
     if (pageArticles.length < size) break;
@@ -553,6 +629,21 @@ export async function fetchWechatAccountArticles({
 function clampPageSize(value: number): number {
   if (!Number.isFinite(value)) return 5;
   return Math.min(Math.max(Math.floor(value), 1), 20);
+}
+
+/** 整页都早于时间下界时可以提前收工（列表按发布时间倒序） */
+function isPageEntirelyBefore(
+  pageArticles: WechatPublishedArticle[],
+  publishedAfter: number
+): boolean {
+  if (!pageArticles.length) return false;
+
+  return pageArticles.every((article) => {
+    if (!article.publishedAt) return false;
+
+    const timestamp = new Date(article.publishedAt).getTime();
+    return Number.isFinite(timestamp) && timestamp < publishedAfter;
+  });
 }
 
 async function fetchWechatPublishPageWithRetry({
@@ -705,8 +796,10 @@ function parseLegacyArticle(value: unknown): Partial<WechatPublishedArticle> {
   const record = asRecord(value);
 
   return parsePublishedArticle({
+    copyright_type: record.copyright_type,
     cover: record.cover,
     create_time: record.create_time ?? record.update_time,
+    is_original: record.is_original,
     link: record.link,
     title: record.title
   });
@@ -719,10 +812,31 @@ function parsePublishedArticle(value: unknown): Partial<WechatPublishedArticle> 
 
   return {
     cover: stringValue(record.cover),
+    isOriginal: parseIsOriginal(record),
     publishedAt: timestampToIso(record.create_time ?? record.update_time),
     title: title ? compactWhitespace(title) : undefined,
     url: rawUrl ? decodeHtmlEntities(rawUrl) : undefined
   };
+}
+
+/**
+ * 微信在不同接口版本里用过多个字段表达原创：`is_original`（0/1）与
+ * `copyright_type`（1 表示原创）。两个都不存在时返回 undefined 表示「未知」，
+ * 由调用方决定是否当作非原创处理。
+ */
+function parseIsOriginal(record: Record<string, unknown>): boolean | undefined {
+  const isOriginal = record.is_original;
+  if (typeof isOriginal === "boolean") return isOriginal;
+  if (typeof isOriginal === "number") return isOriginal === 1;
+  if (typeof isOriginal === "string" && isOriginal.trim()) return isOriginal.trim() === "1";
+
+  const copyrightType = record.copyright_type;
+  if (typeof copyrightType === "number") return copyrightType === 1;
+  if (typeof copyrightType === "string" && copyrightType.trim()) {
+    return copyrightType.trim() === "1";
+  }
+
+  return undefined;
 }
 
 function stringValue(value: unknown): string | undefined {

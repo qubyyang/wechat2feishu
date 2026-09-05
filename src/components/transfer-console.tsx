@@ -57,6 +57,10 @@ export function TransferConsole() {
   const [batchLimit, setBatchLimit] = useState(20);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("markdown");
   const [incremental, setIncremental] = useState(true);
+  const [keyword, setKeyword] = useState("");
+  const [originalOnly, setOriginalOnly] = useState(false);
+  const [publishedAfter, setPublishedAfter] = useState("");
+  const [publishedBefore, setPublishedBefore] = useState("");
   const [url, setUrl] = useState("");
   const pending = pendingAction !== null;
   const canTransferToFeishu = Boolean(config?.ready);
@@ -186,7 +190,11 @@ export function TransferConsole() {
           accountId,
           format: exportFormat,
           incremental,
-          limit: batchLimit
+          keyword,
+          limit: batchLimit,
+          originalOnly,
+          publishedAfter,
+          publishedBefore
         }),
         headers: { "content-type": "application/json" },
         method: "POST"
@@ -426,6 +434,41 @@ export function TransferConsole() {
               />
               增量导出：跳过此前已归档过的文章，只下载新增内容
             </label>
+            <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_auto_auto] sm:items-center">
+              <input
+                aria-label="标题关键词"
+                className="h-10 rounded-md border border-black/10 bg-white px-3 text-sm outline-none"
+                onChange={(event) => setKeyword(event.target.value)}
+                placeholder="标题关键词，空格分隔表示同时包含"
+                value={keyword}
+              />
+              <input
+                aria-label="起始发布日期"
+                className="h-10 rounded-md border border-black/10 bg-white px-3 text-sm outline-none"
+                onChange={(event) => setPublishedAfter(event.target.value)}
+                type="date"
+                value={publishedAfter}
+              />
+              <input
+                aria-label="结束发布日期"
+                className="h-10 rounded-md border border-black/10 bg-white px-3 text-sm outline-none"
+                onChange={(event) => setPublishedBefore(event.target.value)}
+                type="date"
+                value={publishedBefore}
+              />
+              <label className="inline-flex cursor-pointer items-center gap-2 whitespace-nowrap px-1 text-xs text-stone-600">
+                <input
+                  checked={originalOnly}
+                  className="h-3.5 w-3.5 accent-ink"
+                  onChange={(event) => setOriginalOnly(event.target.checked)}
+                  type="checkbox"
+                />
+                仅原创
+              </label>
+            </div>
+            <p className="mt-2 text-xs text-stone-500">
+              筛选在文章列表阶段生效，条件越窄需要翻的页数越多；受微信频控限制，翻页仍会按配置的间隔限速。
+            </p>
           </section>
 
           {message ? (
