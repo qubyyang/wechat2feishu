@@ -53,6 +53,9 @@ W2F_WECHAT_RETRY_BASE_MS=6000         # Backoff base; actual wait is base × 2^n
 W2F_ASSET_INTERVAL_MS=300             # Delay between individual asset downloads
 W2F_ASSET_MAX_BYTES=20971520          # Per-asset size cap, 20MB by default; larger files are skipped
 W2F_DOWNLOAD_MEDIA=false              # Also download audio/video; images only by default
+
+# Incremental export across runs
+W2F_ARCHIVE_INDEX_PATH=./data/archive-index.json  # Archived-article index used to skip duplicates
 ```
 
 2. In Feishu Open Platform, grant your custom app these permissions:

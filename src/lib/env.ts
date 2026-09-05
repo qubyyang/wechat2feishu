@@ -1,6 +1,7 @@
 export type ServerConfig = {
   appId: string;
   appSecret: string;
+  archiveIndexPath: string;
   assetIntervalMs: number;
   assetMaxBytes: number;
   baseUrl: string;
@@ -58,6 +59,7 @@ export function getServerConfig(): ServerConfig {
   return {
     appId: process.env.FEISHU_APP_ID ?? "",
     appSecret: process.env.FEISHU_APP_SECRET ?? "",
+    archiveIndexPath: process.env.W2F_ARCHIVE_INDEX_PATH ?? "./data/archive-index.json",
     assetIntervalMs: readNumberEnv(
       "W2F_ASSET_INTERVAL_MS",
       WECHAT_PACING_DEFAULTS.assetIntervalMs,

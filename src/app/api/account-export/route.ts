@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { ArchiveIndexStore, filterUnarchivedArticles } from "@/lib/archive-index";
 import { assertWechatBatchConfig, getServerConfig } from "@/lib/env";
 import { HistoryStore } from "@/lib/history";
 import { parseExportFormat, safeDocumentTitle } from "@/lib/safe";
@@ -17,11 +18,15 @@ export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as {
     accountId?: string;
     format?: string;
+    /** 增量模式：跳过索引中已归档的文章，默认开启 */
+    incremental?: boolean;
     limit?: number;
   };
   const config = getServerConfig();
   const history = new HistoryStore(config.historyPath);
+  const archiveIndex = new ArchiveIndexStore(config.archiveIndexPath);
   const accountId = body.accountId?.trim() ?? "";
+  const incremental = body.incremental !== false;
 
   let format: ExportFormat;
   try {
@@ -35,7 +40,7 @@ export async function POST(request: NextRequest) {
     const checkedAccountId = assertWechatAccountId(accountId);
     const credentials = assertWechatBatchConfig(config);
     const warnings: string[] = [];
-    const articles = await fetchWechatAccountArticles({
+    const listed = await fetchWechatAccountArticles({
       accountId: checkedAccountId,
       cookie: credentials.wechatMpCookie,
       intervalMs: config.wechatListIntervalMs,
@@ -47,13 +52,32 @@ export async function POST(request: NextRequest) {
       token: credentials.wechatMpToken
     });
 
-    if (!articles.length) {
+    if (!listed.length) {
       throw new Error("没有获取到该公众号的文章列表。");
+    }
+
+    // 在抓正文之前剔除已归档文章：列表配额已经花掉了，但正文抓取才是大头
+    const archivedUrls = incremental
+      ? await archiveIndex.listArchivedUrls(checkedAccountId)
+      : new Set<string>();
+    const { skipped, unarchived } = filterUnarchivedArticles(listed, archivedUrls);
+
+    if (!unarchived.length) {
+      return NextResponse.json(
+        {
+          error: `本次列出的 ${listed.length} 篇文章都已归档过，没有新增内容。如需重新导出，请关闭增量模式。`
+        },
+        { status: 409 }
+      );
+    }
+
+    if (skipped.length) {
+      warnings.push(`增量模式跳过 ${skipped.length} 篇已归档文章。`);
     }
 
     const result = await buildWechatAccountZip({
       accountId: checkedAccountId,
-      articles,
+      articles: unarchived,
       assetIntervalMs: config.assetIntervalMs,
       assetMaxBytes: config.assetMaxBytes,
       downloadMedia: config.downloadMedia,
@@ -61,14 +85,26 @@ export async function POST(request: NextRequest) {
       intervalMs: config.wechatArticleIntervalMs,
       onWarning: (message) => warnings.push(message)
     });
+
+    await archiveIndex.record(
+      checkedAccountId,
+      result.archived.map((item) => ({
+        archivedAt: new Date().toISOString(),
+        filename: item.filename,
+        publishedAt: item.publishedAt,
+        title: item.title,
+        url: item.url
+      }))
+    );
+
     const filename = `${safeDocumentTitle(checkedAccountId)}-公众号文章.zip`;
     await history.add({
       sourceUrl: `wechat-account:${checkedAccountId}`,
       status: result.successCount > 0 ? "success" : "failed",
       target: format,
-      title: `${checkedAccountId} 批量导出 ${result.successCount}/${articles.length}${
-        warnings.length ? `（${warnings.length} 条限流提示）` : ""
-      }`
+      title: `${checkedAccountId} 批量导出 ${result.successCount}/${unarchived.length}${
+        skipped.length ? `（增量跳过 ${skipped.length} 篇）` : ""
+      }${warnings.length ? `（${warnings.length} 条提示）` : ""}`
     });
 
     if (warnings.length) {
@@ -79,7 +115,10 @@ export async function POST(request: NextRequest) {
       headers: {
         "cache-control": "no-store",
         "content-disposition": `attachment; filename="wechat-account.zip"; filename*=UTF-8''${encodeURIComponent(filename)}`,
-        "content-type": "application/zip"
+        "content-type": "application/zip",
+        "x-w2f-asset-count": String(result.assetCount),
+        "x-w2f-skipped-count": String(skipped.length),
+        "x-w2f-success-count": String(result.successCount)
       }
     });
   } catch (error) {

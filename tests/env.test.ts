@@ -12,6 +12,7 @@ import {
 const completeConfig = {
   appId: "cli_demo",
   appSecret: "secret",
+  archiveIndexPath: "./data/archive-index.json",
   assetIntervalMs: WECHAT_PACING_DEFAULTS.assetIntervalMs,
   assetMaxBytes: ASSET_MAX_BYTES_DEFAULT,
   baseUrl: "https://open.feishu.cn",

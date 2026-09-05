@@ -56,6 +56,7 @@ export function TransferConsole() {
   const [accountUrl, setAccountUrl] = useState("");
   const [batchLimit, setBatchLimit] = useState(20);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("markdown");
+  const [incremental, setIncremental] = useState(true);
   const [url, setUrl] = useState("");
   const pending = pendingAction !== null;
   const canTransferToFeishu = Boolean(config?.ready);
@@ -181,7 +182,12 @@ export function TransferConsole() {
 
     try {
       const response = await fetch("/api/account-export", {
-        body: JSON.stringify({ accountId, format: exportFormat, limit: batchLimit }),
+        body: JSON.stringify({
+          accountId,
+          format: exportFormat,
+          incremental,
+          limit: batchLimit
+        }),
         headers: { "content-type": "application/json" },
         method: "POST"
       });
@@ -194,9 +200,13 @@ export function TransferConsole() {
       const filename =
         getFilenameFromDisposition(response.headers.get("content-disposition")) ??
         "公众号文章.zip";
+      const skippedCount = Number(response.headers.get("x-w2f-skipped-count") ?? 0);
+      const assetCount = Number(response.headers.get("x-w2f-asset-count") ?? 0);
       downloadBlob(blob, filename);
       setMessage(
-        `已导出公众号 ${exportFormat === "html" ? "HTML" : "Markdown"} 压缩包：${filename}`
+        `已导出公众号 ${exportFormat === "html" ? "HTML" : "Markdown"} 压缩包：${filename}` +
+          (assetCount ? `，内含 ${assetCount} 个资源文件` : "") +
+          (skippedCount ? `，增量跳过 ${skippedCount} 篇已归档文章` : "")
       );
       await refresh();
     } catch (error) {
@@ -407,6 +417,15 @@ export function TransferConsole() {
                 下载 ZIP（{exportFormat === "html" ? "HTML" : "MD"}）
               </button>
             </div>
+            <label className="mt-3 inline-flex cursor-pointer items-center gap-2 text-xs text-stone-600">
+              <input
+                checked={incremental}
+                className="h-3.5 w-3.5 accent-ink"
+                onChange={(event) => setIncremental(event.target.checked)}
+                type="checkbox"
+              />
+              增量导出：跳过此前已归档过的文章，只下载新增内容
+            </label>
           </section>
 
           {message ? (

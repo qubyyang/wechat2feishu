@@ -33,6 +33,27 @@ export type WechatPublishedArticle = {
   url: string;
 };
 
+/** 跨次导出去重索引里的一条文章记录 */
+export type ArchiveIndexEntry = {
+  archivedAt: string;
+  filename?: string;
+  publishedAt?: string;
+  title: string;
+  url: string;
+};
+
+export type ArchiveIndexFile = {
+  accounts: Record<
+    string,
+    {
+      /** key 为文章 URL */
+      articles: Record<string, ArchiveIndexEntry>;
+      updatedAt: string;
+    }
+  >;
+  version: number;
+};
+
 export type TransferHistoryRecord = {
   createdAt: string;
   documentToken?: string;

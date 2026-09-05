@@ -53,6 +53,9 @@ W2F_WECHAT_RETRY_BASE_MS=6000         # 退避基数，实际等待为基数 × 
 W2F_ASSET_INTERVAL_MS=300             # 资源逐个下载之间的间隔
 W2F_ASSET_MAX_BYTES=20971520          # 单个资源体积上限，默认 20MB，超限跳过
 W2F_DOWNLOAD_MEDIA=false              # 是否连音频/视频一起下载，默认只下图片
+
+# 跨次增量导出
+W2F_ARCHIVE_INDEX_PATH=./data/archive-index.json  # 已归档文章索引，勾选"增量导出"时据此跳过
 ```
 
 ## 获取飞书配置

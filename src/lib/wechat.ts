@@ -778,6 +778,7 @@ export async function buildWechatAccountZip({
   intervalMs = 1200,
   onWarning
 }: BuildWechatAccountZipOptions): Promise<{
+  archived: Array<{ filename: string; publishedAt?: string; title: string; url: string }>;
   assetCount: number;
   failureCount: number;
   successCount: number;
@@ -890,6 +891,14 @@ export async function buildWechatAccountZip({
   );
 
   return {
+    archived: manifest
+      .filter((item) => item.status === "success" && item.filename)
+      .map((item) => ({
+        filename: item.filename as string,
+        publishedAt: item.publishedAt,
+        title: item.title,
+        url: item.url
+      })),
     assetCount: writtenAssets.size,
     failureCount: failures.length,
     successCount: manifest.filter((item) => item.status === "success").length,
