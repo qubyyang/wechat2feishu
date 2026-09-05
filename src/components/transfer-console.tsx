@@ -45,6 +45,62 @@ type ExportFormat = "csv" | "docx" | "html" | "markdown" | "mhtml" | "pdf";
 
 type PendingAction = "account-export" | "account-id" | "export" | "transfer";
 
+/** 服务端 SSE 事件；total 在列表翻页阶段还不确定 */
+type ProgressEvent = {
+  current?: number;
+  failed?: number;
+  jobId?: string;
+  message: string;
+  stage: "article" | "done" | "error" | "listing" | "packaging";
+  total?: number;
+  warnings?: string[];
+};
+
+type BatchProgress = {
+  current: number;
+  message: string;
+  total?: number;
+};
+
+/**
+ * SSE 帧以空行分隔，网络分片会把一帧劈成两半，因此必须缓冲到完整帧再解析。
+ */
+async function* readProgressEvents(
+  body: ReadableStream<Uint8Array>
+): AsyncGenerator<ProgressEvent> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf("\n\n");
+
+      const payload = frame
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim())
+        .join("");
+
+      if (!payload) continue;
+
+      try {
+        yield JSON.parse(payload) as ProgressEvent;
+      } catch {
+        // 半截 JSON 说明流被截断，跳过这帧而不是让整次导出报错
+      }
+    }
+  }
+}
+
 const pipeline = ["抓取正文", "清洗排版", "生成 Markdown/HTML", "归档或导出"];
 
 export function TransferConsole() {
@@ -61,6 +117,7 @@ export function TransferConsole() {
   const [originalOnly, setOriginalOnly] = useState(false);
   const [publishedAfter, setPublishedAfter] = useState("");
   const [publishedBefore, setPublishedBefore] = useState("");
+  const [progress, setProgress] = useState<BatchProgress | null>(null);
   const [url, setUrl] = useState("");
   const pending = pendingAction !== null;
   const canTransferToFeishu = Boolean(config?.ready);
@@ -182,6 +239,7 @@ export function TransferConsole() {
   async function handleBatchExport() {
     setPendingAction("account-export");
     setMessage("");
+    setProgress({ current: 0, message: "正在建立连接…" });
 
     try {
       const response = await fetch("/api/account-export", {
@@ -193,27 +251,58 @@ export function TransferConsole() {
           limit: batchLimit,
           originalOnly,
           publishedAfter,
-          publishedBefore
+          publishedBefore,
+          stream: true
         }),
         headers: { "content-type": "application/json" },
         method: "POST"
       });
 
-      if (!response.ok) {
+      // 参数校验类错误在建流之前就返回 JSON，此时没有进度流可读
+      if (!response.ok || !response.body) {
         throw new Error(await readErrorMessage(response, "批量导出失败"));
       }
 
-      const blob = await response.blob();
+      let jobId: string | undefined;
+      let warnings: string[] = [];
+
+      for await (const event of readProgressEvents(response.body)) {
+        if (event.stage === "error") {
+          throw new Error(event.message);
+        }
+
+        setProgress({
+          current: event.current ?? 0,
+          message: event.message,
+          total: event.total
+        });
+
+        if (event.stage === "done") {
+          jobId = event.jobId;
+          warnings = event.warnings ?? [];
+        }
+      }
+
+      if (!jobId) {
+        throw new Error("导出流意外结束，未收到结果。请重试。");
+      }
+
+      // ZIP 是二进制，无法走 SSE，凭 jobId 二次领取（服务端取走即删）
+      const zipResponse = await fetch(
+        `/api/account-export?jobId=${encodeURIComponent(jobId)}`
+      );
+
+      if (!zipResponse.ok) {
+        throw new Error(await readErrorMessage(zipResponse, "下载导出结果失败"));
+      }
+
       const filename =
-        getFilenameFromDisposition(response.headers.get("content-disposition")) ??
+        getFilenameFromDisposition(zipResponse.headers.get("content-disposition")) ??
         "公众号文章.zip";
-      const skippedCount = Number(response.headers.get("x-w2f-skipped-count") ?? 0);
-      const assetCount = Number(response.headers.get("x-w2f-asset-count") ?? 0);
-      downloadBlob(blob, filename);
+      downloadBlob(await zipResponse.blob(), filename);
       setMessage(
         `已导出公众号 ${formatLabel(exportFormat)} 压缩包：${filename}` +
-          (assetCount ? `，内含 ${assetCount} 个资源文件` : "") +
-          (skippedCount ? `，增量跳过 ${skippedCount} 篇已归档文章` : "")
+          (warnings.length ? `（${warnings.length} 条提示，详见服务端日志）` : "")
       );
       await refresh();
     } catch (error) {
@@ -221,6 +310,7 @@ export function TransferConsole() {
       await refresh();
     } finally {
       setPendingAction(null);
+      setProgress(null);
     }
   }
 
@@ -428,6 +518,38 @@ export function TransferConsole() {
                 下载 ZIP（{formatLabel(exportFormat)}）
               </button>
             </div>
+            {progress ? (
+              <div className="mt-3 rounded-md border border-black/10 bg-white/70 px-3 py-2.5">
+                <div className="flex items-center justify-between gap-3 text-xs text-stone-600">
+                  <span className="truncate">{progress.message}</span>
+                  {progress.total ? (
+                    <span className="shrink-0 font-medium tabular-nums">
+                      {progress.current}/{progress.total}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/10">
+                  {/* 列表阶段还不知道总量，用整条脉冲代替百分比进度 */}
+                  <div
+                    className={
+                      progress.total
+                        ? "h-full rounded-full bg-ink transition-[width] duration-300"
+                        : "h-full w-full animate-pulse rounded-full bg-ink/40"
+                    }
+                    style={
+                      progress.total
+                        ? {
+                            width: `${Math.min(
+                              100,
+                              Math.round((progress.current / progress.total) * 100)
+                            )}%`
+                          }
+                        : undefined
+                    }
+                  />
+                </div>
+              </div>
+            ) : null}
             <label className="mt-3 inline-flex cursor-pointer items-center gap-2 text-xs text-stone-600">
               <input
                 checked={incremental}

@@ -25,6 +25,7 @@ English: A self-hosted WeChat public account article archiver that exports artic
 - 批量导出时把正文图片一并下载进 zip 的 `assets/` 目录，正文改用相对路径引用（音视频可选开启）。
 - 增量导出：按公众号维度记录已归档文章，重复导出时自动跳过，避免重复消耗微信频控配额。
 - 列表筛选：按标题关键词、发布日期区间、是否原创过滤，筛选发生在抓正文之前。
+- 批量导出实时进度：导出过程通过 SSE 上报列表、逐篇抓取与打包阶段，前端显示进度条；ZIP 在服务端暂存后由第二次请求领取（取走即删）。
 - 本地保存处理历史。
 
 ## 项目状态
@@ -59,6 +60,8 @@ W2F_DOWNLOAD_MEDIA=false              # 是否连音频/视频一起下载，默
 
 # 跨次增量导出
 W2F_ARCHIVE_INDEX_PATH=./data/archive-index.json  # 已归档文章索引，勾选"增量导出"时据此跳过
+W2F_EXPORT_JOB_DIR=./data/export-jobs             # 流式导出时 ZIP 的服务端暂存目录
+W2F_EXPORT_JOB_TTL_MS=1800000                     # 暂存包存活时长，过期由下次导出顺带清理
 ```
 
 ## 获取飞书配置

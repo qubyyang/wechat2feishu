@@ -16,6 +16,7 @@ import {
 import type {
   ArticleAsset,
   ExportFormat,
+  ExportProgressEvent,
   PerArticleExportFormat,
   WechatArticle,
   WechatPublishedArticle
@@ -420,6 +421,8 @@ export type FetchWechatAccountArticlesOptions = WechatAccountCredentials & {
   intervalMs?: number;
   limit?: number;
   maxRetries?: number;
+  /** 每翻完一页上报一次已列出的文章数 */
+  onProgress?: (event: ExportProgressEvent) => void;
   onWarning?: (message: string) => void;
   pageSize?: number;
   retryBaseMs?: number;
@@ -480,6 +483,7 @@ export async function fetchWechatAccountArticles({
   intervalMs = 3000,
   limit = 20,
   maxRetries = 3,
+  onProgress,
   onWarning,
   pageSize = 5,
   retryBaseMs = 6000,
@@ -546,6 +550,13 @@ export async function fetchWechatAccountArticles({
       onWarning?.(`已翻到早于起始日期的文章，提前结束列表抓取（共扫描 ${scanned} 篇）。`);
       break;
     }
+
+    // 总量取决于还能翻多少页，翻页途中无法确定，因此只报 current
+    onProgress?.({
+      current: articles.length,
+      message: `已列出 ${articles.length} 篇文章（扫描 ${scanned} 篇）`,
+      stage: "listing"
+    });
 
     if (pageArticles.length < size) break;
   }
@@ -803,6 +814,8 @@ export type BuildWechatAccountZipOptions = {
   downloadMedia?: boolean;
   format?: ExportFormat;
   intervalMs?: number;
+  /** 每篇文章处理完毕后上报一次进度 */
+  onProgress?: (event: ExportProgressEvent) => void;
   onWarning?: (message: string) => void;
 };
 
@@ -817,6 +830,7 @@ export async function buildWechatAccountZip({
   downloadMedia = false,
   format = "markdown",
   intervalMs = 1200,
+  onProgress,
   onWarning
 }: BuildWechatAccountZipOptions): Promise<{
   archived: Array<{ filename: string; publishedAt?: string; title: string; url: string }>;
@@ -917,7 +931,24 @@ export async function buildWechatAccountZip({
         url: listedArticle.url
       });
     }
+
+    // 无论成败都上报，前端才能看到进度条持续推进而不是卡在失败那一篇
+    onProgress?.({
+      current: index + 1,
+      failed: failures.length,
+      message: `已处理 ${index + 1}/${articles.length} 篇：${listedArticle.title}`,
+      stage: "article",
+      total: articles.length
+    });
   }
+
+  onProgress?.({
+    current: articles.length,
+    failed: failures.length,
+    message: "正在打包 ZIP…",
+    stage: "packaging",
+    total: articles.length
+  });
 
   // csv 是整批汇总表，作为 ZIP 里唯一的产物
   if (format === "csv") {

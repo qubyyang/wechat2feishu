@@ -171,6 +171,47 @@ describe("WeChat account helpers", () => {
     );
   });
 
+  test("reports per-article progress and a final packaging event", async () => {
+    const convert = vi
+      .fn()
+      .mockResolvedValueOnce({
+        article: {
+          html: "<p>ok</p>",
+          sourceUrl: "https://mp.weixin.qq.com/s/a",
+          title: "第一篇"
+        },
+        markdown: "第一篇内容"
+      })
+      .mockRejectedValueOnce(new Error("触发了安全验证"))
+      .mockResolvedValueOnce({
+        article: {
+          html: "<p>ok</p>",
+          sourceUrl: "https://mp.weixin.qq.com/s/c",
+          title: "第三篇"
+        },
+        markdown: "第三篇内容"
+      });
+    const events: Array<{ current?: number; failed?: number; stage: string }> = [];
+
+    await buildWechatAccountZip({
+      accountId: "Mzk5MDcyODQ2Mw==",
+      articles: parseWechatPublishArticles(publishResponse),
+      convert,
+      downloadAssets: false,
+      intervalMs: 0,
+      onProgress: (event) =>
+        events.push({ current: event.current, failed: event.failed, stage: event.stage })
+    });
+
+    // 失败的第二篇同样要推进计数，否则前端进度条会卡住
+    expect(events).toEqual([
+      { current: 1, failed: 0, stage: "article" },
+      { current: 2, failed: 1, stage: "article" },
+      { current: 3, failed: 1, stage: "article" },
+      { current: 3, failed: 1, stage: "packaging" }
+    ]);
+  });
+
   test("builds a zip of standalone html files when format is html", async () => {
     const convert = vi.fn().mockResolvedValue({
       article: {

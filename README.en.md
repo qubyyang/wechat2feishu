@@ -25,6 +25,7 @@ The local app looks like this:
 - Bundle article images into the zip's `assets/` folder and rewrite the body to relative paths (audio/video optional).
 - Incremental export: archived articles are tracked per account and skipped on later runs, so WeChat's rate-limited quota is not spent twice.
 - List filtering by title keyword, published-date range and original-only, applied before any article body is fetched.
+- Live batch export progress: listing, per-article fetching and packaging are reported over SSE and rendered as a progress bar; the finished ZIP is staged server-side and picked up by a second request that consumes it.
 - Keep a local transfer history.
 
 ## Project Status
@@ -59,6 +60,8 @@ W2F_DOWNLOAD_MEDIA=false              # Also download audio/video; images only b
 
 # Incremental export across runs
 W2F_ARCHIVE_INDEX_PATH=./data/archive-index.json  # Archived-article index used to skip duplicates
+W2F_EXPORT_JOB_DIR=./data/export-jobs             # Server-side staging dir for streamed export ZIPs
+W2F_EXPORT_JOB_TTL_MS=1800000                     # Staged package lifetime; expired ones are swept on the next export
 ```
 
 2. In Feishu Open Platform, grant your custom app these permissions:

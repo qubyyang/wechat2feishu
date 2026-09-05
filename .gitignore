@@ -18,6 +18,7 @@ coverage/
 # local app data
 data/history.json
 data/archive-index.json
+data/export-jobs/
 
 # logs
 *.log

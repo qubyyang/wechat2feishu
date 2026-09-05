@@ -17,6 +17,8 @@ const completeConfig = {
   assetMaxBytes: ASSET_MAX_BYTES_DEFAULT,
   baseUrl: "https://open.feishu.cn",
   downloadMedia: false,
+  exportJobDir: "./data/export-jobs",
+  exportJobTtlMs: 30 * 60 * 1000,
   folderToken: "fld_demo",
   historyPath: "./data/history.json",
   wechatArticleIntervalMs: WECHAT_PACING_DEFAULTS.articleIntervalMs,

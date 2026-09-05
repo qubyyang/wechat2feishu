@@ -59,6 +59,27 @@ export type ArchiveIndexFile = {
   version: number;
 };
 
+/** 批量导出的推进阶段，用于 SSE 进度上报 */
+export type ExportProgressStage =
+  | "done"
+  | "error"
+  | "listing"
+  | "packaging"
+  | "article";
+
+export type ExportProgressEvent = {
+  /** 当前已完成数量，listing 阶段表示已列出的文章数 */
+  current?: number;
+  /** 失败但未中断整批的文章数 */
+  failed?: number;
+  jobId?: string;
+  message: string;
+  stage: ExportProgressStage;
+  /** 总量未知时为 undefined（例如列表还在翻页） */
+  total?: number;
+  warnings?: string[];
+};
+
 export type TransferHistoryRecord = {
   createdAt: string;
   documentToken?: string;

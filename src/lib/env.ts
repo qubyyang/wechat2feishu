@@ -6,6 +6,10 @@ export type ServerConfig = {
   assetMaxBytes: number;
   baseUrl: string;
   downloadMedia: boolean;
+  /** 流式导出时 ZIP 的服务端暂存目录 */
+  exportJobDir: string;
+  /** 暂存 ZIP 的存活时长，过期后由后续请求顺带清理 */
+  exportJobTtlMs: number;
   folderToken: string;
   historyPath: string;
   wechatArticleIntervalMs: number;
@@ -74,6 +78,13 @@ export function getServerConfig(): ServerConfig {
     ),
     baseUrl: process.env.FEISHU_APP_BASE_URL ?? "https://open.feishu.cn",
     downloadMedia: readBooleanEnv("W2F_DOWNLOAD_MEDIA", false),
+    exportJobDir: process.env.W2F_EXPORT_JOB_DIR ?? "./data/export-jobs",
+    exportJobTtlMs: readNumberEnv(
+      "W2F_EXPORT_JOB_TTL_MS",
+      30 * 60 * 1000,
+      60_000,
+      24 * 60 * 60 * 1000
+    ),
     folderToken: process.env.FEISHU_FOLDER_TOKEN ?? "",
     historyPath: process.env.W2F_HISTORY_PATH ?? "./data/history.json",
     wechatArticleIntervalMs: readNumberEnv(
