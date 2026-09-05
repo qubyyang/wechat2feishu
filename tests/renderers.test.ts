@@ -1,3 +1,4 @@
+import JSZip from "jszip";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -6,6 +7,7 @@ import {
   buildManifestCsv,
   encodeMimeHeader,
   htmlToPdf,
+  inlineAssetsAsDataUris,
   isPerArticleFormat,
   markdownToDocxBlocks,
   renderArticle,
@@ -13,6 +15,16 @@ import {
   toQuotedPrintable
 } from "@/lib/renderers";
 import type { ArticleAsset, WechatArticle } from "@/lib/types";
+
+/** 最小合法 PNG 头，够 probeImage 读出尺寸即可 */
+function pngFixture(width: number, height: number): Buffer {
+  const buffer = Buffer.alloc(24);
+  buffer.writeUInt32BE(0x89504e47, 0);
+  buffer.writeUInt32BE(width, 16);
+  buffer.writeUInt32BE(height, 20);
+
+  return buffer;
+}
 
 const article: WechatArticle = {
   author: "作者甲",
@@ -106,12 +118,29 @@ describe("Markdown → DOCX 块结构", () => {
     ]);
   });
 
-  test("行内标记被剥离：图片丢弃、链接保留文字", () => {
+  test("行内标记被剥离：夹在文字里的图片丢弃、链接保留文字", () => {
     expect(markdownToDocxBlocks("**粗** 与 *斜* 和 `码`")).toEqual([
       { kind: "paragraph", text: "粗 与 斜 和 码" }
     ]);
     expect(markdownToDocxBlocks("![图](a.png)看[链接](https://x)")).toEqual([
       { kind: "paragraph", text: "看链接" }
+    ]);
+  });
+
+  test("独占一行的图片升级为图片块，保留 alt 与路径", () => {
+    expect(markdownToDocxBlocks("正文\n\n![配图](./assets/a.png)\n\n后记")).toEqual([
+      { kind: "paragraph", text: "正文" },
+      { alt: "配图", kind: "image", src: "./assets/a.png" },
+      { kind: "paragraph", text: "后记" }
+    ]);
+  });
+
+  test("图片可以没有 alt，也可以带 title", () => {
+    expect(markdownToDocxBlocks('![](a.png)')).toEqual([
+      { alt: "", kind: "image", src: "a.png" }
+    ]);
+    expect(markdownToDocxBlocks('![图](a.png "标题")')).toEqual([
+      { alt: "图", kind: "image", src: "a.png" }
     ]);
   });
 });
@@ -122,6 +151,124 @@ describe("DOCX 生成", () => {
 
     expect(buffer.subarray(0, 2).toString("latin1")).toBe("PK");
     expect(buffer.byteLength).toBeGreaterThan(1000);
+  });
+
+  test("把已下载的图片内嵌进 word/media，并保留正文前后顺序", async () => {
+    const buffer = await articleToDocx(
+      {
+        html: '<p>前言</p><img src="./assets/a.png" alt="配图" /><p>后记</p>',
+        sourceUrl: "https://mp.weixin.qq.com/s/img",
+        title: "带图文章"
+      },
+      [
+        {
+          contentType: "image/png",
+          data: pngFixture(800, 400),
+          kind: "image",
+          path: "assets/a.png",
+          sourceUrl: "https://mmbiz.qpic.cn/a"
+        }
+      ]
+    );
+    const zip = await JSZip.loadAsync(buffer);
+    // zip 里同时存在 "word/media/" 目录项，只数真实文件
+    const media = Object.entries(zip.files).filter(
+      ([name, entry]) => name.startsWith("word/media/") && !entry.dir
+    );
+    const document = await zip.file("word/document.xml")?.async("string");
+
+    expect(media).toHaveLength(1);
+    expect(document).toContain("<w:drawing>");
+    expect(document).toContain("前言");
+    expect(document).toContain("后记");
+    // 800px 宽被压到正文宽度 600px，等比后高 300px；docx 以 EMU 记录（1px = 9525）
+    expect(document).toContain(`cx="${600 * 9525}" cy="${300 * 9525}"`);
+  });
+
+  test("资源缺失或格式不受支持时降级为占位文字，不丢正文顺序", async () => {
+    const buffer = await articleToDocx(
+      {
+        html: '<p>a</p><img src="./assets/missing.png" alt="丢失的图" /><p>b</p>',
+        sourceUrl: "https://mp.weixin.qq.com/s/miss",
+        title: "缺图文章"
+      },
+      []
+    );
+    const zip = await JSZip.loadAsync(buffer);
+    const media = Object.entries(zip.files).filter(
+      ([name, entry]) => name.startsWith("word/media/") && !entry.dir
+    );
+    const document = await zip.file("word/document.xml")?.async("string");
+
+    expect(media).toHaveLength(0);
+    expect(document).toContain("未能嵌入");
+    expect(document).toContain("丢失的图");
+  });
+
+  test("webp 这类 docx 不支持的格式同样走占位降级", async () => {
+    const buffer = await articleToDocx(
+      {
+        html: '<img src="./assets/a.webp" alt="动图" />',
+        sourceUrl: "https://mp.weixin.qq.com/s/webp",
+        title: "webp"
+      },
+      [
+        {
+          data: Buffer.from("RIFF____WEBPVP8 ", "ascii"),
+          kind: "image",
+          path: "assets/a.webp",
+          sourceUrl: "https://mmbiz.qpic.cn/w"
+        }
+      ]
+    );
+    const zip = await JSZip.loadAsync(buffer);
+
+    expect(
+      Object.entries(zip.files).filter(
+        ([name, entry]) => name.startsWith("word/media/") && !entry.dir
+      )
+    ).toHaveLength(0);
+    expect(await zip.file("word/document.xml")?.async("string")).toContain("未能嵌入");
+  });
+});
+
+describe("PDF 资源内联", () => {
+  test("把 ./assets 引用换成 data URI，setContent 下才能出图", () => {
+    const html = inlineAssetsAsDataUris(
+      '<img src="./assets/a.png"><img src=\'assets/a.png\'>',
+      [
+        {
+          contentType: "image/png",
+          data: Buffer.from("abc"),
+          kind: "image",
+          path: "assets/a.png",
+          sourceUrl: "https://mmbiz.qpic.cn/a"
+        }
+      ]
+    );
+
+    expect(html).toBe(
+      '<img src="data:image/png;base64,YWJj"><img src="data:image/png;base64,YWJj">'
+    );
+  });
+
+  test("未收录的引用与外链保持原样", () => {
+    const html = '<img src="https://example.com/x.png"><a href="https://x">链接</a>';
+
+    expect(
+      inlineAssetsAsDataUris(html, [
+        {
+          data: Buffer.from("abc"),
+          kind: "image",
+          path: "assets/a.png",
+          sourceUrl: "https://mmbiz.qpic.cn/a"
+        }
+      ])
+    ).toBe(html);
+  });
+
+  test("没有资源时原样返回，不做无谓的正则扫描", () => {
+    expect(inlineAssetsAsDataUris("<p>纯文字</p>", [])).toBe("<p>纯文字</p>");
   });
 });
 

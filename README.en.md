@@ -18,7 +18,7 @@ The local app looks like this:
 
 ## Features
 
-- Export a single WeChat public account article to Markdown, HTML, PDF, DOCX or MHTML (the HTML output is a standalone, styled document that opens directly in a browser; MHTML embeds images into a single-file archive).
+- Export a single WeChat public account article to Markdown, HTML, PDF, DOCX or MHTML (the HTML output is a standalone, styled document that opens directly in a browser; PDF, DOCX and MHTML all embed article images, so they render offline).
 - Import a single WeChat public account article into Feishu Docs.
 - Extract the public account ID (`__biz`) from an article link.
 - Batch fetch articles by public account ID and download them as a Markdown / HTML / PDF / DOCX / MHTML zip, or as a single summary CSV manifest.

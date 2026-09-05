@@ -18,7 +18,7 @@ English: A self-hosted WeChat public account article archiver that exports artic
 
 ## 功能
 
-- 单篇公众号文章链接转 Markdown / HTML / PDF / DOCX / MHTML（HTML 为带阅读样式、可直接在浏览器打开的独立文档；MHTML 内嵌图片为单文件存档）。
+- 单篇公众号文章链接转 Markdown / HTML / PDF / DOCX / MHTML（HTML 为带阅读样式、可直接在浏览器打开的独立文档；PDF / DOCX / MHTML 均内嵌正文配图，无需联网即可查看）。
 - 单篇公众号文章导入飞书文档。
 - 从公众号文章链接提取公众号 ID（文章 URL 中的 `__biz`）。
 - 使用公众号 ID 批量获取文章列表，并将文章内容导出为 Markdown / HTML / PDF / DOCX / MHTML zip，或导出为汇总 CSV 清单。

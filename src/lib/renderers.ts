@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { fitImageWidth, indexAssetsByPath, probeImage } from "./image-meta";
 import type {
   ArticleAsset,
   ExportFormat,
@@ -9,7 +10,7 @@ import type {
 
 export type RenderArticleOptions = {
   article: WechatArticle;
-  /** 阶段 1 已下载的资源，MHTML 直接内嵌它们，不再二次联网 */
+  /** 阶段 1 已下载的资源，MHTML 与 DOCX 直接内嵌它们，不再二次联网 */
   assets?: ArticleAsset[];
   format: PerArticleExportFormat;
   html: string;
@@ -25,7 +26,7 @@ export async function renderArticle({
 }: RenderArticleOptions): Promise<Buffer | string> {
   switch (format) {
     case "docx":
-      return articleToDocx(article);
+      return articleToDocx(article, assets);
     case "html":
       return html;
     case "markdown":
@@ -33,7 +34,8 @@ export async function renderArticle({
     case "mhtml":
       return articleToMhtml({ article, assets, html });
     case "pdf":
-      return htmlToPdf(html);
+      // 正文里的 ./assets/xxx 在 setContent 下没有基准目录可解析，必须先内联
+      return htmlToPdf(inlineAssetsAsDataUris(html, assets));
     default: {
       // 穷尽检查：新增格式忘了实现时在编译期报错
       const exhaustive: never = format;
@@ -153,6 +155,7 @@ export function encodeMimeHeader(value: string): string {
 type DocxHeadingLevel = "Heading1" | "Heading2" | "Heading3";
 
 export type DocxBlock =
+  | { alt: string; kind: "image"; src: string }
   | { kind: "heading"; level: DocxHeadingLevel; text: string }
   | { kind: "listItem"; ordered: boolean; text: string }
   | { kind: "paragraph"; text: string }
@@ -161,9 +164,11 @@ export type DocxBlock =
 /**
  * 从 Markdown 抽出 DOCX 需要的块结构。
  *
- * 刻意只覆盖标题 / 段落 / 列表 / 引用这几类：公众号正文经过 sanitize 之后
- * 结构本来就扁平，把 Markdown 的全部语法都映射到 docx 收益很低。图片不进
- * DOCX——正文图片已经在 ZIP 的 assets/ 里，重复嵌入只会让文件体积翻倍。
+ * 刻意只覆盖标题 / 段落 / 列表 / 引用 / 图片这几类：公众号正文经过 sanitize
+ * 之后结构本来就扁平，把 Markdown 的全部语法都映射到 docx 收益很低。
+ *
+ * 图片只记录引用路径，字节由调用方从已下载的 assets 里取——DOCX 生成时再去
+ * 联网抓图会被微信 CDN 以防盗链拒绝，这也是早期版本干脆丢弃图片的原因。
  */
 export function markdownToDocxBlocks(markdown: string): DocxBlock[] {
   const blocks: DocxBlock[] = [];
@@ -171,6 +176,13 @@ export function markdownToDocxBlocks(markdown: string): DocxBlock[] {
   for (const rawLine of markdown.split("\n")) {
     const line = rawLine.trim();
     if (!line || line === "---") continue;
+
+    // 独占一行的图片才升级为图片块；夹在文字里的图片仍按行内处理（会被剥掉）
+    const image = line.match(/^!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)$/);
+    if (image?.[2]) {
+      blocks.push({ alt: image[1] ?? "", kind: "image", src: image[2] });
+      continue;
+    }
 
     const heading = line.match(/^(#{1,3})\s+(.*)$/);
     if (heading?.[2]) {
@@ -219,8 +231,15 @@ function stripInlineMarkdown(value: string): string {
     .trim();
 }
 
-export async function articleToDocx(article: WechatArticle): Promise<Buffer> {
-  const { Document, HeadingLevel, Packer, Paragraph, TextRun } = await import("docx");
+/** DOCX 正文可用宽度（A4 减去左右页边距），单位 EMU 换算前的像素基准 */
+const DOCX_CONTENT_WIDTH_PX = 600;
+
+export async function articleToDocx(
+  article: WechatArticle,
+  assets: ArticleAsset[] = []
+): Promise<Buffer> {
+  const { Document, HeadingLevel, ImageRun, Packer, Paragraph, TextRun } = await import("docx");
+  const assetIndex = indexAssetsByPath(assets);
   const meta = [
     article.author ? `作者：${article.author}` : undefined,
     article.publishedAt ? `发布时间：${article.publishedAt}` : undefined,
@@ -233,7 +252,7 @@ export async function articleToDocx(article: WechatArticle): Promise<Buffer> {
     Heading3: HeadingLevel.HEADING_3
   } as const;
 
-  const children = [
+  const children: InstanceType<typeof Paragraph>[] = [
     new Paragraph({ heading: HeadingLevel.TITLE, text: article.title }),
     ...meta.map(
       (text) =>
@@ -248,6 +267,39 @@ export async function articleToDocx(article: WechatArticle): Promise<Buffer> {
       case "heading":
         children.push(new Paragraph({ heading: headingMap[block.level], text: block.text }));
         break;
+      case "image": {
+        const asset = assetIndex.get(block.src);
+        const probed = asset ? probeImage(asset.data) : undefined;
+
+        // 资源没下载成功、或格式 docx 不认（svg/webp），降级成 alt 文字占位，
+        // 保留正文顺序，而不是让读者以为原文就没有这张图
+        if (!asset || !probed) {
+          const hint = block.alt || "图片";
+          children.push(
+            new Paragraph({
+              children: [new TextRun({ color: "999999", italics: true, size: 18, text: `［${hint}未能嵌入］` })]
+            })
+          );
+          break;
+        }
+
+        const size = fitImageWidth(probed, DOCX_CONTENT_WIDTH_PX);
+        children.push(
+          new Paragraph({
+            children: [
+              new ImageRun({
+                altText: block.alt
+                  ? { description: block.alt, name: block.alt, title: block.alt }
+                  : undefined,
+                data: asset.data,
+                transformation: size,
+                type: probed.type
+              })
+            ]
+          })
+        );
+        break;
+      }
       case "listItem":
         children.push(
           new Paragraph({
@@ -283,6 +335,16 @@ export async function articleToDocx(article: WechatArticle): Promise<Buffer> {
 /** 把清洗后的 HTML 折成朴素 Markdown，仅供 DOCX 取块结构使用 */
 function htmlToPlainMarkdown(html: string): string {
   return html
+    // 图片先转成独占一行的 Markdown 图片，后续才能被识别成图片块
+    .replace(/<\s*img\b[^>]*>/gi, (tag: string) => {
+      const src = tag.match(/\bsrc\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i);
+      const url = src?.[2] ?? src?.[3] ?? src?.[4];
+      if (!url) return "\n";
+
+      const alt = tag.match(/\balt\s*=\s*("([^"]*)"|'([^']*)')/i);
+
+      return `\n![${(alt?.[2] ?? alt?.[3] ?? "").replace(/[[\]]/g, "")}](${url})\n`;
+    })
     .replace(/<\s*h([1-3])[^>]*>([\s\S]*?)<\s*\/\s*h\1\s*>/gi, (_, level: string, text: string) =>
       `\n${"#".repeat(Number(level))} ${stripTags(text)}\n`
     )
@@ -305,6 +367,33 @@ function stripTags(value: string): string {
 }
 
 /* --------------------------------- PDF --------------------------------- */
+
+/**
+ * 把正文里指向本地资源的引用换成 data: URI。
+ *
+ * PDF 走 `page.setContent()`，页面没有真实的 base URL，`./assets/x.png` 这类
+ * 相对路径一律解析失败；而直接放行原始的 mmbiz 地址又会被微信防盗链挡掉。
+ * 图片字节此刻就在内存里，内联是唯一不再联网也能出图的做法。
+ */
+export function inlineAssetsAsDataUris(html: string, assets: ArticleAsset[]): string {
+  if (!assets.length) return html;
+
+  const index = indexAssetsByPath(assets);
+
+  return html.replace(
+    /\b(src|href)\s*=\s*("([^"]*)"|'([^']*)')/gi,
+    (match, attribute: string, _quoted: string, doubleQuoted?: string, singleQuoted?: string) => {
+      const reference = doubleQuoted ?? singleQuoted ?? "";
+      const asset = index.get(reference);
+
+      if (!asset) return match;
+
+      const type = asset.contentType ?? "application/octet-stream";
+
+      return `${attribute}="data:${type};base64,${asset.data.toString("base64")}"`;
+    }
+  );
+}
 
 export type PdfRenderer = (html: string) => Promise<Buffer>;
 
