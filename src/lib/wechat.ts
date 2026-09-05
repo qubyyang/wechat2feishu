@@ -13,6 +13,7 @@ import {
   exportFormatExtension,
   safeFilenameWithExtension
 } from "./safe";
+import { markdownToSearchText } from "./search-index";
 import type {
   ArticleAsset,
   ExportFormat,
@@ -834,12 +835,15 @@ export async function buildWechatAccountZip({
   onWarning
 }: BuildWechatAccountZipOptions): Promise<{
   archived: Array<{ filename: string; publishedAt?: string; title: string; url: string }>;
+  /** 供全文检索索引使用的正文纯文本，正文已在此处拿到，不需要事后再抓一次 */
+  documents: Array<{ publishedAt?: string; text: string; title: string; url: string }>;
   assetCount: number;
   failureCount: number;
   successCount: number;
   zip: Buffer;
 }> {
   const zip = new JSZip();
+  const documents: Array<{ publishedAt?: string; text: string; title: string; url: string }> = [];
   const failures: Array<{ error: string; title: string; url: string }> = [];
   const writtenAssets = new Set<string>();
   const manifest: Array<{
@@ -907,6 +911,13 @@ export async function buildWechatAccountZip({
       if (format !== "csv") {
         zip.file(filename, rendered);
       }
+
+      documents.push({
+        publishedAt: listedArticle.publishedAt,
+        text: markdownToSearchText(markdown),
+        title: article.title,
+        url: article.sourceUrl
+      });
 
       manifest.push({
         assetCount: articleAssets.length,
@@ -995,6 +1006,7 @@ export async function buildWechatAccountZip({
   );
 
   return {
+    documents,
     archived: manifest
       .filter((item) => item.status === "success")
       .map((item) => ({

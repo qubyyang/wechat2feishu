@@ -29,6 +29,8 @@ const completeConfig = {
   scheduleIntervalMs: SCHEDULE_DEFAULT_INTERVAL_MS,
   scheduleLimit: 0,
   scheduleStatePath: "./data/schedule-state.json",
+  searchIndexEnabled: true,
+  searchIndexPath: "./data/search-index.json",
   wechatArticleIntervalMs: WECHAT_PACING_DEFAULTS.articleIntervalMs,
   wechatListIntervalMs: WECHAT_PACING_DEFAULTS.listIntervalMs,
   wechatListPageSize: WECHAT_PACING_DEFAULTS.listPageSize,

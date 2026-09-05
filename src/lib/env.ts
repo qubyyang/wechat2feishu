@@ -47,6 +47,10 @@ export type ServerConfig = {
   /** 单次归档最多处理的文章数，0 表示不限制 */
   scheduleLimit: number;
   scheduleStatePath: string;
+  /** 全文检索索引路径 */
+  searchIndexPath: string;
+  /** 是否在导出时顺带建立全文索引 */
+  searchIndexEnabled: boolean;
   wechatArticleIntervalMs: number;
   wechatListIntervalMs: number;
   wechatListPageSize: number;
@@ -133,6 +137,8 @@ export function getServerConfig(): ServerConfig {
     ),
     scheduleLimit: readNumberEnv("W2F_SCHEDULE_LIMIT", 0, 0, 1000),
     scheduleStatePath: process.env.W2F_SCHEDULE_STATE_PATH ?? "./data/schedule-state.json",
+    searchIndexEnabled: readBooleanEnv("W2F_SEARCH_INDEX_ENABLED", true),
+    searchIndexPath: process.env.W2F_SEARCH_INDEX_PATH ?? "./data/search-index.json",
     wechatArticleIntervalMs: readNumberEnv(
       "W2F_WECHAT_ARTICLE_INTERVAL_MS",
       WECHAT_PACING_DEFAULTS.articleIntervalMs,

@@ -2,6 +2,7 @@ import { ArchiveIndexStore, filterUnarchivedArticles } from "./archive-index";
 import { assertWechatBatchConfig, getServerConfig } from "./env";
 import { HistoryStore } from "./history";
 import { safeDocumentTitle } from "./safe";
+import { SearchIndexStore } from "./search-index";
 import type { ExportFormat, ExportProgressEvent } from "./types";
 import {
   buildWechatAccountZip,
@@ -136,6 +137,18 @@ export async function runAccountExport(
       url: item.url
     }))
   );
+
+  // 正文在打包阶段已经拿到，索引在此顺带落盘，不需要为检索再抓一次微信接口。
+  // 建索引失败不该让一次成功的导出变成失败，因此单独兜底。
+  if (config.searchIndexEnabled && result.documents.length) {
+    try {
+      await new SearchIndexStore(config.searchIndexPath).record(accountId, result.documents);
+    } catch (error) {
+      warnings.push(
+        `全文索引写入失败：${error instanceof Error ? error.message : "未知错误"}`
+      );
+    }
+  }
 
   const history = new HistoryStore(config.historyPath);
   await history.add({

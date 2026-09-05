@@ -35,3 +35,4 @@ pnpm-debug.log*
 # hosting
 .vercel/
 .workbuddy
+data/search-index.json

@@ -80,6 +80,37 @@ export type ExportProgressEvent = {
   warnings?: string[];
 };
 
+/** 全文检索索引里的一篇文章 */
+export type SearchIndexDocument = {
+  indexedAt: string;
+  publishedAt?: string;
+  /** 已剥离 Markdown 语法、截断后的正文纯文本 */
+  text: string;
+  title: string;
+  url: string;
+};
+
+export type SearchIndexFile = {
+  accounts: Record<
+    string,
+    {
+      /** key 为文章 URL */
+      documents: Record<string, SearchIndexDocument>;
+      updatedAt: string;
+    }
+  >;
+  version: number;
+};
+
+export type SearchHit = {
+  accountId: string;
+  publishedAt?: string;
+  score: number;
+  snippet: string;
+  title: string;
+  url: string;
+};
+
 /** 定时归档中单个公众号的最近一次执行结果 */
 export type ScheduleAccountState = {
   accountId: string;

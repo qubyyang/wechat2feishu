@@ -27,6 +27,7 @@ The local app looks like this:
 - List filtering by title keyword, published-date range and original-only, applied before any article body is fetched.
 - Live batch export progress: listing, per-article fetching and packaging are reported over SSE and rendered as a progress bar; the finished ZIP is staged server-side and picked up by a second request that consumes it.
 - Scheduled incremental archiving: configured accounts are exported at a fixed interval into timestamped ZIPs under `data/archives/`, with per-account status and a manual trigger in the console.
+- Full-text search over archives: the index is built during export, Chinese is tokenized with bigrams and terms are combined with AND, so past archives can be searched with snippets straight from the console.
 - Keep a local transfer history.
 
 ## Project Status
@@ -72,6 +73,10 @@ W2F_SCHEDULE_FORMAT=markdown                      # Archive format; invalid valu
 W2F_SCHEDULE_LIMIT=0                              # Max articles per run, 0 means unlimited
 W2F_SCHEDULE_ARCHIVE_DIR=./data/archives          # Where archive ZIPs land, filenames carry a timestamp
 W2F_SCHEDULE_STATE_PATH=./data/schedule-state.json # Last run time and result per account
+
+# Full-text search over archives (index is written during export; search never re-fetches WeChat)
+W2F_SEARCH_INDEX_ENABLED=true                     # Whether batch export writes the search index
+W2F_SEARCH_INDEX_PATH=./data/search-index.json    # Index file location
 ```
 
 ## Scheduled Incremental Archiving
@@ -86,6 +91,20 @@ Automatic execution requires an external timer to call the endpoint. The service
 ```
 
 Calling it more often is harmless: accounts that are not due are skipped, and accounts are processed **serially**. Failures also advance the last-run timestamp — rate limiting is the most common failure cause, and retrying tightly only extends the penalty. "No new articles" is recorded as `skipped`, counted as neither success nor failure, and produces no empty package.
+
+## Full-Text Search Over Archives
+
+During batch export, each article's body is also written to `data/search-index.json`, which powers the "archive search" panel in the console. The index is built at export time because the plain text is already in hand — indexing afterwards would mean fetching every article from WeChat again, and that quota is the scarcest resource in this project.
+
+Chinese text is tokenized with **bigrams**: 「公众号文章」becomes 「公众 / 众号 / 号文 / 文章」, and queries are split the same way before intersecting. This recalls arbitrary substrings without shipping a dictionary, while avoiding the single-character approach that would treat 「上海」and 「海上」as equivalent. Multiple query terms are combined with **AND** — archived articles on one topic are highly similar, so OR would drag in weakly related results.
+
+The inverted index is built on demand at query time rather than persisted: the index file already stores the full text, so writing the postings would double its size, while search itself is a low-frequency operation. Each article body is capped at 20,000 characters so a long piece cannot blow up a JSON file that is read and written as a whole.
+
+```bash
+curl 'http://localhost:3000/api/search?q=大模型&limit=10'
+```
+
+Without `q`, the endpoint returns only the indexed document count and update time per account. A missing or corrupted index degrades to an empty index and never blocks export.
 
 2. In Feishu Open Platform, grant your custom app these permissions:
 

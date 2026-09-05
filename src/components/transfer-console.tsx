@@ -14,6 +14,7 @@ import {
   Loader2,
   LogIn,
   ShieldCheck,
+  Search,
   Sparkles,
   Timer,
   Trash2
@@ -29,6 +30,21 @@ type ConfigStatus = {
   wechatBatchReady: boolean;
   wechatMpCookie: boolean;
   wechatMpToken: boolean;
+};
+
+type SearchHit = {
+  accountId: string;
+  publishedAt?: string;
+  score: number;
+  snippet: string;
+  title: string;
+  url: string;
+};
+
+type SearchIndexAccount = {
+  accountId: string;
+  documentCount: number;
+  updatedAt: string;
 };
 
 type ScheduleAccount = {
@@ -140,6 +156,10 @@ export function TransferConsole() {
   const [progress, setProgress] = useState<BatchProgress | null>(null);
   const [schedule, setSchedule] = useState<ScheduleStatus | null>(null);
   const [schedulePending, setSchedulePending] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchHits, setSearchHits] = useState<SearchHit[] | null>(null);
+  const [searchAccounts, setSearchAccounts] = useState<SearchIndexAccount[]>([]);
+  const [searchPending, setSearchPending] = useState(false);
   const [url, setUrl] = useState("");
   const pending = pendingAction !== null;
   const canTransferToFeishu = Boolean(config?.ready);
@@ -166,6 +186,38 @@ export function TransferConsole() {
     // 调度是可选能力，未配置时接口仍返回空列表，不该影响主面板加载
     if (scheduleResponse.ok) {
       setSchedule((await scheduleResponse.json()) as ScheduleStatus);
+    }
+
+    const searchResponse = await fetch("/api/search");
+    if (searchResponse.ok) {
+      const json = (await searchResponse.json()) as { accounts: SearchIndexAccount[] };
+      setSearchAccounts(json.accounts);
+    }
+  }
+
+  async function handleSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const query = searchQuery.trim();
+    if (!query) {
+      setSearchHits(null);
+      return;
+    }
+
+    setSearchPending(true);
+
+    try {
+      const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+      const json = (await response.json()) as { error?: string; hits: SearchHit[] };
+
+      if (!response.ok) throw new Error(json.error ?? "检索失败");
+
+      setSearchHits(json.hits);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "检索失败");
+      setSearchHits([]);
+    } finally {
+      setSearchPending(false);
     }
   }
 
@@ -717,6 +769,51 @@ export function TransferConsole() {
             ) : null}
           </section>
 
+          <section className="min-w-0 rounded-lg border border-black/10 bg-white/56 p-6 shadow-soft backdrop-blur-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="inline-flex items-center gap-2 text-lg font-semibold">
+                <Search size={18} />
+                归档检索
+              </h2>
+              <span className="text-xs text-stone-500">
+                {searchIndexTotal(searchAccounts)} 篇已入库
+              </span>
+            </div>
+
+            <form className="flex gap-2" onSubmit={handleSearch}>
+              <input
+                className="min-w-0 flex-1 rounded-md border border-black/10 bg-white px-3 py-2 text-sm outline-none transition focus:border-black/25"
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="搜索已归档文章的标题与正文"
+                value={searchQuery}
+              />
+              <button
+                className="inline-flex shrink-0 items-center gap-2 rounded-md border border-black/10 px-3 py-2 text-sm font-medium text-stone-600 transition hover:bg-white disabled:opacity-50"
+                disabled={searchPending}
+                type="submit"
+              >
+                {searchPending ? <Loader2 className="animate-spin" size={15} /> : <Search size={15} />}
+                搜索
+              </button>
+            </form>
+
+            {searchHits ? (
+              <div className="mt-3 max-h-[360px] space-y-2 overflow-auto pr-1">
+                {searchHits.length ? (
+                  searchHits.map((hit) => <SearchHitItem hit={hit} key={hit.url} />)
+                ) : (
+                  <div className="rounded-md border border-dashed border-black/15 px-4 py-6 text-center text-sm text-stone-500">
+                    没有匹配的文章
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="mt-3 text-xs leading-5 text-stone-500 [overflow-wrap:anywhere]">
+                索引在批量导出时自动建立，只覆盖导出过的文章。多个词之间是「且」的关系。
+              </p>
+            )}
+          </section>
+
           {schedule ? (
             <section className="min-w-0 rounded-lg border border-black/10 bg-white/56 p-6 shadow-soft backdrop-blur-2xl">
               <div className="mb-4 flex items-center justify-between">
@@ -842,6 +939,32 @@ function formatLabel(format: ExportFormat): string {
 
 function formatExtension(format: ExportFormat): string {
   return format === "markdown" ? "md" : format;
+}
+
+function searchIndexTotal(accounts: SearchIndexAccount[]): number {
+  return accounts.reduce((total, account) => total + account.documentCount, 0);
+}
+
+function SearchHitItem({ hit }: { hit: SearchHit }) {
+  return (
+    <a
+      className="block rounded-md border border-black/10 bg-white/70 px-3 py-3 transition hover:bg-white"
+      href={hit.url}
+      rel="noreferrer"
+      target="_blank"
+    >
+      <div className="truncate text-sm font-medium text-stone-700">{hit.title}</div>
+      {hit.snippet ? (
+        <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500 [overflow-wrap:anywhere]">
+          {hit.snippet}
+        </p>
+      ) : null}
+      <div className="mt-1 text-[11px] text-stone-400">
+        {hit.publishedAt ? `${hit.publishedAt} · ` : ""}
+        {hit.accountId}
+      </div>
+    </a>
+  );
 }
 
 function formatInterval(ms: number): string {
