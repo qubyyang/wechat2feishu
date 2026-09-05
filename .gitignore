@@ -19,6 +19,8 @@ coverage/
 data/history.json
 data/archive-index.json
 data/export-jobs/
+data/archives/
+data/schedule-state.json
 
 # logs
 *.log

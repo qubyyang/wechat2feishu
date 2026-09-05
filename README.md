@@ -26,6 +26,7 @@ English: A self-hosted WeChat public account article archiver that exports artic
 - 增量导出：按公众号维度记录已归档文章，重复导出时自动跳过，避免重复消耗微信频控配额。
 - 列表筛选：按标题关键词、发布日期区间、是否原创过滤，筛选发生在抓正文之前。
 - 批量导出实时进度：导出过程通过 SSE 上报列表、逐篇抓取与打包阶段，前端显示进度条；ZIP 在服务端暂存后由第二次请求领取（取走即删）。
+- 定时增量归档：按固定间隔自动导出指定公众号，ZIP 带时间戳落到 `data/archives/`，控制台可查看每个账号的上次运行结果并手动触发。
 - 本地保存处理历史。
 
 ## 项目状态
@@ -62,7 +63,29 @@ W2F_DOWNLOAD_MEDIA=false              # 是否连音频/视频一起下载，默
 W2F_ARCHIVE_INDEX_PATH=./data/archive-index.json  # 已归档文章索引，勾选"增量导出"时据此跳过
 W2F_EXPORT_JOB_DIR=./data/export-jobs             # 流式导出时 ZIP 的服务端暂存目录
 W2F_EXPORT_JOB_TTL_MS=1800000                     # 暂存包存活时长，过期由下次导出顺带清理
+
+# 定时增量归档（本服务不内置 cron，由外部定时器周期性 POST /api/schedule 触发）
+W2F_SCHEDULE_ENABLED=false                        # 总开关，关闭时 tick 只记录检查时间不执行
+W2F_SCHEDULE_ACCOUNTS=                            # 要归档的公众号 ID，逗号 / 顿号 / 空格分隔
+W2F_SCHEDULE_INTERVAL_MS=86400000                 # 同一账号两次归档的最小间隔，下限 5 分钟
+W2F_SCHEDULE_FORMAT=markdown                      # 归档格式，取值同导出格式；非法值回退 markdown
+W2F_SCHEDULE_LIMIT=0                              # 单次最多处理的文章数，0 表示不限制
+W2F_SCHEDULE_ARCHIVE_DIR=./data/archives          # 归档 ZIP 落地目录，文件名带时间戳
+W2F_SCHEDULE_STATE_PATH=./data/schedule-state.json # 各账号上次运行时间与结果
 ```
+
+## 定时增量归档
+
+配置 `W2F_SCHEDULE_ACCOUNTS` 后，控制台右侧会出现「定时归档」面板，显示每个账号的上次运行时间、结果与连续失败次数，并可手动「立即执行」。
+
+自动执行需要外部定时器周期性调用接口——本服务**刻意不内置 cron 守护进程**：Next.js 的 route handler 在 serverless 与常驻部署下生命周期完全不同，进程内 `setInterval` 会随实例回收静默消失；多实例部署时还会并发去打微信接口，那正是频控最容易被触发的方式。
+
+```bash
+# crontab 示例：每 10 分钟检查一次，是否真正执行由「上次运行时间 + 间隔」决定
+*/10 * * * * curl -s -X POST http://localhost:3000/api/schedule -H 'content-type: application/json' -d '{}'
+```
+
+调用得再密也不会超频：未到期的账号直接跳过，账号之间**串行**处理。失败同样推进「上次运行时间」——失败最常见的原因正是频控，密集重试只会让惩罚更久。「没有新增文章」记为 `skipped`，不计失败也不产出空包。
 
 ## 获取飞书配置
 

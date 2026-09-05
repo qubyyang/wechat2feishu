@@ -1,3 +1,29 @@
+import type { ExportFormat } from "./types";
+
+/** 与 schedule.ts 共享的间隔下限，写在这里避免两个模块循环引用 */
+export const SCHEDULE_MIN_INTERVAL_MS = 5 * 60 * 1000;
+export const SCHEDULE_DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+const EXPORT_FORMAT_VALUES: readonly ExportFormat[] = [
+  "csv",
+  "docx",
+  "html",
+  "markdown",
+  "mhtml",
+  "pdf"
+];
+
+/** 环境变量填错格式不应让整个服务起不来，静默回退到默认值并留一条告警 */
+export function readExportFormatEnv(name: string, fallback: ExportFormat): ExportFormat {
+  const value = process.env[name]?.trim().toLowerCase();
+
+  if (!value) return fallback;
+  if (EXPORT_FORMAT_VALUES.includes(value as ExportFormat)) return value as ExportFormat;
+
+  console.warn(`[env] ${name}=${value} 不是受支持的导出格式，已回退为 ${fallback}。`);
+  return fallback;
+}
+
 export type ServerConfig = {
   appId: string;
   appSecret: string;
@@ -12,6 +38,15 @@ export type ServerConfig = {
   exportJobTtlMs: number;
   folderToken: string;
   historyPath: string;
+  /** 定时归档产出的 ZIP 落地目录 */
+  scheduleArchiveDir: string;
+  scheduleEnabled: boolean;
+  scheduleFormat: ExportFormat;
+  /** 两次归档之间的最小间隔 */
+  scheduleIntervalMs: number;
+  /** 单次归档最多处理的文章数，0 表示不限制 */
+  scheduleLimit: number;
+  scheduleStatePath: string;
   wechatArticleIntervalMs: number;
   wechatListIntervalMs: number;
   wechatListPageSize: number;
@@ -87,6 +122,17 @@ export function getServerConfig(): ServerConfig {
     ),
     folderToken: process.env.FEISHU_FOLDER_TOKEN ?? "",
     historyPath: process.env.W2F_HISTORY_PATH ?? "./data/history.json",
+    scheduleArchiveDir: process.env.W2F_SCHEDULE_ARCHIVE_DIR ?? "./data/archives",
+    scheduleEnabled: readBooleanEnv("W2F_SCHEDULE_ENABLED", false),
+    scheduleFormat: readExportFormatEnv("W2F_SCHEDULE_FORMAT", "markdown"),
+    scheduleIntervalMs: readNumberEnv(
+      "W2F_SCHEDULE_INTERVAL_MS",
+      SCHEDULE_DEFAULT_INTERVAL_MS,
+      SCHEDULE_MIN_INTERVAL_MS,
+      30 * 24 * 60 * 60 * 1000
+    ),
+    scheduleLimit: readNumberEnv("W2F_SCHEDULE_LIMIT", 0, 0, 1000),
+    scheduleStatePath: process.env.W2F_SCHEDULE_STATE_PATH ?? "./data/schedule-state.json",
     wechatArticleIntervalMs: readNumberEnv(
       "W2F_WECHAT_ARTICLE_INTERVAL_MS",
       WECHAT_PACING_DEFAULTS.articleIntervalMs,

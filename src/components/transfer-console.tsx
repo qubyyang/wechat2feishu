@@ -15,6 +15,7 @@ import {
   LogIn,
   ShieldCheck,
   Sparkles,
+  Timer,
   Trash2
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
@@ -28,6 +29,25 @@ type ConfigStatus = {
   wechatBatchReady: boolean;
   wechatMpCookie: boolean;
   wechatMpToken: boolean;
+};
+
+type ScheduleAccount = {
+  accountId: string;
+  archiveFilename?: string;
+  consecutiveFailures?: number;
+  error?: string;
+  lastRunAt?: string;
+  lastStatus?: "failed" | "skipped" | "success";
+  successCount?: number;
+};
+
+type ScheduleStatus = {
+  accounts: ScheduleAccount[];
+  archiveDir: string;
+  enabled: boolean;
+  format: ExportFormat;
+  intervalMs: number;
+  lastTickAt?: string;
 };
 
 type HistoryRecord = {
@@ -118,6 +138,8 @@ export function TransferConsole() {
   const [publishedAfter, setPublishedAfter] = useState("");
   const [publishedBefore, setPublishedBefore] = useState("");
   const [progress, setProgress] = useState<BatchProgress | null>(null);
+  const [schedule, setSchedule] = useState<ScheduleStatus | null>(null);
+  const [schedulePending, setSchedulePending] = useState(false);
   const [url, setUrl] = useState("");
   const pending = pendingAction !== null;
   const canTransferToFeishu = Boolean(config?.ready);
@@ -130,15 +152,52 @@ export function TransferConsole() {
   }, [config]);
 
   async function refresh() {
-    const [statusResponse, historyResponse] = await Promise.all([
+    const [statusResponse, historyResponse, scheduleResponse] = await Promise.all([
       fetch("/api/status"),
-      fetch("/api/history")
+      fetch("/api/history"),
+      fetch("/api/schedule")
     ]);
     setConfig(await statusResponse.json());
     const historyJson = (await historyResponse.json()) as {
       records: HistoryRecord[];
     };
     setHistory(historyJson.records);
+
+    // 调度是可选能力，未配置时接口仍返回空列表，不该影响主面板加载
+    if (scheduleResponse.ok) {
+      setSchedule((await scheduleResponse.json()) as ScheduleStatus);
+    }
+  }
+
+  async function runScheduleNow(accountId?: string) {
+    setSchedulePending(true);
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/schedule", {
+        body: JSON.stringify({ accountId, force: true }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      });
+      const json = (await response.json()) as {
+        error?: string;
+        results?: Array<{ accountId: string; error?: string; reason?: string; status: string }>;
+      };
+
+      if (!response.ok) throw new Error(json.error ?? "定时归档执行失败");
+
+      const results = json.results ?? [];
+      const succeeded = results.filter((item) => item.status === "success").length;
+      const failed = results.filter((item) => item.status === "failed").length;
+      setMessage(
+        `定时归档已执行：成功 ${succeeded} 个，跳过 ${results.length - succeeded - failed} 个，失败 ${failed} 个。`
+      );
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "定时归档执行失败");
+    } finally {
+      setSchedulePending(false);
+    }
   }
 
   useEffect(() => {
@@ -658,6 +717,56 @@ export function TransferConsole() {
             ) : null}
           </section>
 
+          {schedule ? (
+            <section className="min-w-0 rounded-lg border border-black/10 bg-white/56 p-6 shadow-soft backdrop-blur-2xl">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="inline-flex items-center gap-2 text-lg font-semibold">
+                  <Timer size={18} />
+                  定时归档
+                </h2>
+                <button
+                  className="inline-flex items-center gap-2 rounded-md border border-black/10 px-3 py-2 text-sm font-medium text-stone-600 transition hover:bg-white disabled:opacity-50"
+                  disabled={schedulePending || !schedule.accounts.length}
+                  onClick={() => runScheduleNow()}
+                  type="button"
+                >
+                  {schedulePending ? (
+                    <Loader2 className="animate-spin" size={15} />
+                  ) : (
+                    <Sparkles size={15} />
+                  )}
+                  立即执行
+                </button>
+              </div>
+
+              <p className="mb-3 text-sm leading-6 text-stone-600 [overflow-wrap:anywhere]">
+                {schedule.enabled ? "已启用" : "未启用"}，间隔{" "}
+                {formatInterval(schedule.intervalMs)}，格式 {formatLabel(schedule.format)}
+                {schedule.lastTickAt
+                  ? `，上次检查 ${new Date(schedule.lastTickAt).toLocaleString("zh-CN")}`
+                  : ""}
+                。
+              </p>
+
+              {schedule.accounts.length ? (
+                <div className="space-y-2">
+                  {schedule.accounts.map((account) => (
+                    <ScheduleItem
+                      account={account}
+                      key={account.accountId}
+                      onRun={() => runScheduleNow(account.accountId)}
+                      pending={schedulePending}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-md border border-dashed border-black/15 px-4 py-6 text-center text-sm text-stone-500 [overflow-wrap:anywhere]">
+                  在 .env 中配置 `W2F_SCHEDULE_ACCOUNTS` 后即可定时归档
+                </div>
+              )}
+            </section>
+          ) : null}
+
           <section className="min-w-0 rounded-lg border border-black/10 bg-white/56 p-6 shadow-soft backdrop-blur-2xl">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-semibold">最近处理</h2>
@@ -733,6 +842,62 @@ function formatLabel(format: ExportFormat): string {
 
 function formatExtension(format: ExportFormat): string {
   return format === "markdown" ? "md" : format;
+}
+
+function formatInterval(ms: number): string {
+  const hours = ms / (60 * 60 * 1000);
+  if (hours >= 24 && hours % 24 === 0) return `${hours / 24} 天`;
+  if (hours >= 1) return `${Number(hours.toFixed(1))} 小时`;
+  return `${Math.round(ms / 60000)} 分钟`;
+}
+
+const SCHEDULE_STATUS_LABEL: Record<string, string> = {
+  failed: "失败",
+  skipped: "无新增",
+  success: "成功"
+};
+
+function ScheduleItem({
+  account,
+  onRun,
+  pending
+}: {
+  account: ScheduleAccount;
+  onRun: () => void;
+  pending: boolean;
+}) {
+  return (
+    <div className="rounded-md border border-black/10 bg-white/70 px-3 py-3 text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate font-medium text-stone-700">{account.accountId}</span>
+        <button
+          className="shrink-0 rounded border border-black/10 px-2 py-1 text-xs text-stone-600 transition hover:bg-white disabled:opacity-50"
+          disabled={pending}
+          onClick={onRun}
+          type="button"
+        >
+          执行
+        </button>
+      </div>
+      <p className="mt-1 text-xs leading-5 text-stone-500 [overflow-wrap:anywhere]">
+        {account.lastRunAt
+          ? `${new Date(account.lastRunAt).toLocaleString("zh-CN")} · ${
+              SCHEDULE_STATUS_LABEL[account.lastStatus ?? ""] ?? "未知"
+            }${
+              account.lastStatus === "success" ? ` · ${account.successCount ?? 0} 篇` : ""
+            }`
+          : "尚未运行"}
+      </p>
+      {account.error ? (
+        <p className="mt-1 text-xs leading-5 text-red-600 [overflow-wrap:anywhere]">
+          {account.error}
+          {account.consecutiveFailures && account.consecutiveFailures > 1
+            ? `（连续失败 ${account.consecutiveFailures} 次）`
+            : ""}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 function StatusRow({ active, label }: { active: boolean; label: string }) {

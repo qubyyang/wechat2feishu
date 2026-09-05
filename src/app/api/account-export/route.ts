@@ -1,18 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { ArchiveIndexStore, filterUnarchivedArticles } from "@/lib/archive-index";
-import { assertWechatBatchConfig, getServerConfig } from "@/lib/env";
-import { ExportJobStore } from "@/lib/export-jobs";
-import { HistoryStore } from "@/lib/history";
-import { parseExportFormat, safeDocumentTitle } from "@/lib/safe";
-import type { ExportFormat, ExportProgressEvent } from "@/lib/types";
 import {
-  assertWechatAccountId,
-  buildWechatAccountZip,
-  fetchWechatAccountArticles,
-  parseFilterDate,
-  type WechatArticleFilter
-} from "@/lib/wechat";
+  NothingToExportError,
+  parseArticleFilter,
+  recordAccountExportFailure,
+  runAccountExport
+} from "@/lib/account-export";
+import { getServerConfig } from "@/lib/env";
+import { ExportJobStore } from "@/lib/export-jobs";
+import { parseExportFormat } from "@/lib/safe";
+import type { ExportFormat, ExportProgressEvent } from "@/lib/types";
+import { assertWechatAccountId, type WechatArticleFilter } from "@/lib/wechat";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -30,160 +28,6 @@ type ExportRequestBody = {
   /** 开启后返回 SSE 进度流，ZIP 暂存服务端并由 GET ?jobId= 领取 */
   stream?: boolean;
 };
-
-type ExportOutcome = {
-  assetCount: number;
-  filename: string;
-  skippedCount: number;
-  successCount: number;
-  warnings: string[];
-  zip: Buffer;
-};
-
-/** 只保留真正生效的筛选条件，全空时返回 undefined 以走原有的快路径 */
-function parseArticleFilter(input: {
-  keyword?: string;
-  originalOnly?: boolean;
-  publishedAfter?: string;
-  publishedBefore?: string;
-}): WechatArticleFilter | undefined {
-  const filter: WechatArticleFilter = {
-    keyword: input.keyword?.trim() || undefined,
-    originalOnly: input.originalOnly === true ? true : undefined,
-    publishedAfter: input.publishedAfter?.trim() || undefined,
-    publishedBefore: input.publishedBefore?.trim() || undefined
-  };
-
-  // 提前解析一次，让非法日期在抓取前就报错，而不是浪费配额之后才失败
-  const after = parseFilterDate(filter.publishedAfter);
-  const before = parseFilterDate(filter.publishedBefore, true);
-
-  if (after !== undefined && before !== undefined && after > before) {
-    throw new Error("起始日期不能晚于结束日期。");
-  }
-
-  return Object.values(filter).some((value) => value !== undefined) ? filter : undefined;
-}
-
-/**
- * 「已全部归档」是业务结果而非抓取故障，需要和真正的失败区分：
- * 非流式响应返回 409 而不是 400，流式响应也不应写进失败历史。
- */
-class NothingToExportError extends Error {}
-
-async function runAccountExport(options: {
-  accountId: string;
-  body: ExportRequestBody;
-  filter: WechatArticleFilter | undefined;
-  format: ExportFormat;
-  onProgress?: (event: ExportProgressEvent) => void;
-}): Promise<ExportOutcome> {
-  const { accountId, body, filter, format, onProgress } = options;
-  const config = getServerConfig();
-  const archiveIndex = new ArchiveIndexStore(config.archiveIndexPath);
-  const incremental = body.incremental !== false;
-  const credentials = assertWechatBatchConfig(config);
-  const warnings: string[] = [];
-
-  onProgress?.({ message: "正在获取文章列表…", stage: "listing" });
-
-  const listed = await fetchWechatAccountArticles({
-    accountId,
-    cookie: credentials.wechatMpCookie,
-    filter,
-    intervalMs: config.wechatListIntervalMs,
-    limit: body.limit,
-    maxRetries: config.wechatMaxRetries,
-    onProgress,
-    onWarning: (message) => warnings.push(message),
-    pageSize: config.wechatListPageSize,
-    retryBaseMs: config.wechatRetryBaseMs,
-    token: credentials.wechatMpToken
-  });
-
-  if (!listed.length) {
-    throw new Error(
-      filter
-        ? "没有符合筛选条件的文章。请放宽关键词或时间范围后重试。"
-        : "没有获取到该公众号的文章列表。"
-    );
-  }
-
-  // 在抓正文之前剔除已归档文章：列表配额已经花掉了，但正文抓取才是大头
-  const archivedUrls = incremental
-    ? await archiveIndex.listArchivedUrls(accountId)
-    : new Set<string>();
-  const { skipped, unarchived } = filterUnarchivedArticles(listed, archivedUrls);
-
-  if (!unarchived.length) {
-    throw new NothingToExportError(
-      `本次列出的 ${listed.length} 篇文章都已归档过，没有新增内容。如需重新导出，请关闭增量模式。`
-    );
-  }
-
-  if (skipped.length) {
-    warnings.push(`增量模式跳过 ${skipped.length} 篇已归档文章。`);
-  }
-
-  const result = await buildWechatAccountZip({
-    accountId,
-    articles: unarchived,
-    assetIntervalMs: config.assetIntervalMs,
-    assetMaxBytes: config.assetMaxBytes,
-    downloadMedia: config.downloadMedia,
-    format,
-    intervalMs: config.wechatArticleIntervalMs,
-    onProgress,
-    onWarning: (message) => warnings.push(message)
-  });
-
-  await archiveIndex.record(
-    accountId,
-    result.archived.map((item) => ({
-      archivedAt: new Date().toISOString(),
-      filename: item.filename,
-      publishedAt: item.publishedAt,
-      title: item.title,
-      url: item.url
-    }))
-  );
-
-  const history = new HistoryStore(config.historyPath);
-  await history.add({
-    sourceUrl: `wechat-account:${accountId}`,
-    status: result.successCount > 0 ? "success" : "failed",
-    target: format,
-    title: `${accountId} 批量导出 ${result.successCount}/${unarchived.length}${
-      skipped.length ? `（增量跳过 ${skipped.length} 篇）` : ""
-    }${warnings.length ? `（${warnings.length} 条提示）` : ""}`
-  });
-
-  if (warnings.length) {
-    console.warn("[account-export] 抓取过程提示：\n - " + warnings.join("\n - "));
-  }
-
-  return {
-    assetCount: result.assetCount,
-    filename: `${safeDocumentTitle(accountId)}-公众号文章.zip`,
-    skippedCount: skipped.length,
-    successCount: result.successCount,
-    warnings,
-    zip: result.zip
-  };
-}
-
-async function recordFailure(accountId: string, format: ExportFormat, message: string) {
-  if (!accountId) return;
-
-  const history = new HistoryStore(getServerConfig().historyPath);
-  await history.add({
-    error: message,
-    sourceUrl: `wechat-account:${accountId}`,
-    status: "failed",
-    target: format,
-    title: "批量导出失败"
-  });
-}
 
 function zipHeaders(filename: string): Record<string, string> {
   return {
@@ -219,7 +63,14 @@ function streamResponse(options: {
         // 顺带回收上一轮没被领走的暂存包，避免磁盘无限增长
         await jobs.sweep().catch(() => 0);
 
-        const outcome = await runAccountExport({ ...options, onProgress: send });
+        const outcome = await runAccountExport({
+          accountId: options.accountId,
+          filter: options.filter,
+          format: options.format,
+          incremental: options.body.incremental,
+          limit: options.body.limit,
+          onProgress: send
+        });
         const meta = await jobs.save(outcome.zip, outcome.filename);
 
         send({
@@ -233,9 +84,11 @@ function streamResponse(options: {
         const message = error instanceof Error ? error.message : "批量导出失败";
 
         if (!(error instanceof NothingToExportError)) {
-          await recordFailure(options.accountId, options.format, message).catch(
-            () => undefined
-          );
+          await recordAccountExportFailure(
+            options.accountId,
+            options.format,
+            message
+          ).catch(() => undefined);
         }
 
         send({ message, stage: "error" });
@@ -279,9 +132,10 @@ export async function POST(request: NextRequest) {
   try {
     const outcome = await runAccountExport({
       accountId: checkedAccountId,
-      body,
       filter,
-      format
+      format,
+      incremental: body.incremental,
+      limit: body.limit
     });
 
     return new NextResponse(new Uint8Array(outcome.zip), {
@@ -299,7 +153,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: message }, { status: 409 });
     }
 
-    await recordFailure(checkedAccountId, format, message);
+    await recordAccountExportFailure(checkedAccountId, format, message);
 
     return NextResponse.json({ error: message }, { status: 400 });
   }

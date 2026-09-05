@@ -80,6 +80,34 @@ export type ExportProgressEvent = {
   warnings?: string[];
 };
 
+/** 定时归档中单个公众号的最近一次执行结果 */
+export type ScheduleAccountState = {
+  accountId: string;
+  /** 上次产出的 ZIP 在归档目录中的文件名 */
+  archiveFilename?: string;
+  consecutiveFailures: number;
+  error?: string;
+  lastRunAt?: string;
+  lastStatus?: "failed" | "skipped" | "success";
+  successCount?: number;
+};
+
+export type ScheduleState = {
+  accounts: Record<string, ScheduleAccountState>;
+  lastTickAt?: string;
+  version: number;
+};
+
+export type ScheduleRunSummary = {
+  accountId: string;
+  archiveFilename?: string;
+  error?: string;
+  /** 未到期而跳过时给出的原因 */
+  reason?: string;
+  status: "failed" | "skipped" | "success";
+  successCount?: number;
+};
+
 export type TransferHistoryRecord = {
   createdAt: string;
   documentToken?: string;

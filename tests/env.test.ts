@@ -5,7 +5,9 @@ import {
   assertFeishuConfig,
   getConfigStatus,
   readBooleanEnv,
+  readExportFormatEnv,
   readNumberEnv,
+  SCHEDULE_DEFAULT_INTERVAL_MS,
   WECHAT_PACING_DEFAULTS
 } from "@/lib/env";
 
@@ -21,6 +23,12 @@ const completeConfig = {
   exportJobTtlMs: 30 * 60 * 1000,
   folderToken: "fld_demo",
   historyPath: "./data/history.json",
+  scheduleArchiveDir: "./data/archives",
+  scheduleEnabled: false,
+  scheduleFormat: "markdown" as const,
+  scheduleIntervalMs: SCHEDULE_DEFAULT_INTERVAL_MS,
+  scheduleLimit: 0,
+  scheduleStatePath: "./data/schedule-state.json",
   wechatArticleIntervalMs: WECHAT_PACING_DEFAULTS.articleIntervalMs,
   wechatListIntervalMs: WECHAT_PACING_DEFAULTS.listIntervalMs,
   wechatListPageSize: WECHAT_PACING_DEFAULTS.listPageSize,
@@ -78,5 +86,16 @@ describe("抓限限速参数", () => {
     process.env.W2F_BOOL_DEMO = "maybe";
     expect(readBooleanEnv("W2F_BOOL_DEMO", true)).toBe(true);
     delete process.env.W2F_BOOL_DEMO;
+  });
+});
+
+describe("定时归档格式参数", () => {
+  test("未设置时用默认值，非法值回落而不是抛错", () => {
+    expect(readExportFormatEnv("W2F_FORMAT_DEMO", "markdown")).toBe("markdown");
+    process.env.W2F_FORMAT_DEMO = "PDF";
+    expect(readExportFormatEnv("W2F_FORMAT_DEMO", "markdown")).toBe("pdf");
+    process.env.W2F_FORMAT_DEMO = "epub";
+    expect(readExportFormatEnv("W2F_FORMAT_DEMO", "html")).toBe("html");
+    delete process.env.W2F_FORMAT_DEMO;
   });
 });

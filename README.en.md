@@ -26,6 +26,7 @@ The local app looks like this:
 - Incremental export: archived articles are tracked per account and skipped on later runs, so WeChat's rate-limited quota is not spent twice.
 - List filtering by title keyword, published-date range and original-only, applied before any article body is fetched.
 - Live batch export progress: listing, per-article fetching and packaging are reported over SSE and rendered as a progress bar; the finished ZIP is staged server-side and picked up by a second request that consumes it.
+- Scheduled incremental archiving: configured accounts are exported at a fixed interval into timestamped ZIPs under `data/archives/`, with per-account status and a manual trigger in the console.
 - Keep a local transfer history.
 
 ## Project Status
@@ -62,7 +63,29 @@ W2F_DOWNLOAD_MEDIA=false              # Also download audio/video; images only b
 W2F_ARCHIVE_INDEX_PATH=./data/archive-index.json  # Archived-article index used to skip duplicates
 W2F_EXPORT_JOB_DIR=./data/export-jobs             # Server-side staging dir for streamed export ZIPs
 W2F_EXPORT_JOB_TTL_MS=1800000                     # Staged package lifetime; expired ones are swept on the next export
+
+# Scheduled incremental archiving (no built-in cron; an external timer POSTs /api/schedule)
+W2F_SCHEDULE_ENABLED=false                        # Master switch; when off a tick only records the check time
+W2F_SCHEDULE_ACCOUNTS=                            # Account IDs to archive, separated by commas or spaces
+W2F_SCHEDULE_INTERVAL_MS=86400000                 # Minimum gap between two runs of the same account, floor 5 minutes
+W2F_SCHEDULE_FORMAT=markdown                      # Archive format; invalid values fall back to markdown
+W2F_SCHEDULE_LIMIT=0                              # Max articles per run, 0 means unlimited
+W2F_SCHEDULE_ARCHIVE_DIR=./data/archives          # Where archive ZIPs land, filenames carry a timestamp
+W2F_SCHEDULE_STATE_PATH=./data/schedule-state.json # Last run time and result per account
 ```
+
+## Scheduled Incremental Archiving
+
+Once `W2F_SCHEDULE_ACCOUNTS` is set, a "scheduled archive" panel appears in the console showing each account's last run time, result and consecutive failure count, with a manual "run now" button.
+
+Automatic execution requires an external timer to call the endpoint. The service **deliberately ships no cron daemon**: a Next.js route handler has a completely different lifetime under serverless versus long-running deployments, so an in-process `setInterval` silently disappears when the instance is recycled — and under multi-instance deployment it would hit WeChat concurrently, which is the fastest way to trigger rate limiting.
+
+```bash
+# crontab example: check every 10 minutes; whether it actually runs is decided by last-run time + interval
+*/10 * * * * curl -s -X POST http://localhost:3000/api/schedule -H 'content-type: application/json' -d '{}'
+```
+
+Calling it more often is harmless: accounts that are not due are skipped, and accounts are processed **serially**. Failures also advance the last-run timestamp — rate limiting is the most common failure cause, and retrying tightly only extends the penalty. "No new articles" is recorded as `skipped`, counted as neither success nor failure, and produces no empty package.
 
 2. In Feishu Open Platform, grant your custom app these permissions:
 
