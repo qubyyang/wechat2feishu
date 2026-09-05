@@ -6,6 +6,13 @@ import TurndownService from "turndown";
 import { localizeArticleAssets } from "./assets";
 import { launchChromiumPage, resolveChromeExecutable } from "./browser";
 import { backoffDelay, sleep } from "./pacing";
+import {
+  deriveCheckpointId,
+  type CheckpointArticle,
+  type CheckpointIdentity,
+  type CheckpointState,
+  type ExportCheckpointStore
+} from "./export-checkpoint";
 import { buildManifestCsv, renderArticle } from "./renderers";
 import {
   assertWechatArticleUrl,
@@ -809,6 +816,15 @@ export type BuildWechatAccountZipOptions = {
   /** 资源下载间隔，独立于正文抓取间隔 */
   assetIntervalMs?: number;
   assetMaxBytes?: number;
+  /**
+   * 断点续传。传入后每抓完一篇立即落盘，重试时命中的分片直接从磁盘复用，
+   * 既不打微信接口也不参与限速等待。
+   */
+  checkpoint?: {
+    identity: CheckpointIdentity;
+    state: CheckpointState;
+    store: ExportCheckpointStore;
+  };
   convert?: typeof fetchAndConvertWechatArticle;
   /** 是否把正文图片等资源下载进 ZIP */
   downloadAssets?: boolean;
@@ -826,6 +842,7 @@ export async function buildWechatAccountZip({
   assetIntervalMs = 300,
   assetMaxBytes = 20 * 1024 * 1024,
   assetsDir = "assets",
+  checkpoint,
   convert = fetchAndConvertWechatArticle,
   downloadAssets = true,
   downloadMedia = false,
@@ -839,6 +856,8 @@ export async function buildWechatAccountZip({
   documents: Array<{ publishedAt?: string; text: string; title: string; url: string }>;
   assetCount: number;
   failureCount: number;
+  /** 本次从检查点复用、未重新抓取的文章数 */
+  resumedCount: number;
   successCount: number;
   zip: Buffer;
 }> {
@@ -846,6 +865,7 @@ export async function buildWechatAccountZip({
   const documents: Array<{ publishedAt?: string; text: string; title: string; url: string }> = [];
   const failures: Array<{ error: string; title: string; url: string }> = [];
   const writtenAssets = new Set<string>();
+  let resumedCount = 0;
   const manifest: Array<{
     assetCount?: number;
     coverPath?: string;
@@ -857,6 +877,45 @@ export async function buildWechatAccountZip({
   }> = [];
 
   for (const [index, listedArticle] of articles.entries()) {
+    // 检查点命中：内容已在磁盘上，既不打接口也无需限速等待
+    const cached = checkpoint?.state.articles[listedArticle.url];
+
+    if (cached && cached.status === "success" && cached.filename) {
+      const restored = await restoreFromCheckpoint({
+        cached,
+        checkpoint,
+        format,
+        zip,
+        writtenAssets
+      });
+
+      if (restored) {
+        resumedCount += 1;
+        documents.push({
+          publishedAt: cached.publishedAt,
+          text: cached.searchText,
+          title: cached.title,
+          url: cached.url
+        });
+        manifest.push({
+          assetCount: cached.assetPaths.length,
+          filename: format === "csv" ? undefined : cached.filename,
+          publishedAt: cached.publishedAt,
+          status: "success",
+          title: cached.title,
+          url: cached.url
+        });
+        onProgress?.({
+          current: index + 1,
+          failed: failures.length,
+          message: `已复用 ${index + 1}/${articles.length} 篇：${cached.title}`,
+          stage: "article",
+          total: articles.length
+        });
+        continue;
+      }
+    }
+
     // 正文页同样有频控，逐篇限速，首篇不延迟
     if (index > 0) {
       await sleep(intervalMs);
@@ -918,6 +977,25 @@ export async function buildWechatAccountZip({
         title: article.title,
         url: article.sourceUrl
       });
+
+      // 抓一篇存一篇。攒到最后再写等于把「中断即全丢」的问题原样搬回来
+      if (checkpoint) {
+        await checkpoint.store.recordArticle({
+          article: {
+            assetPaths: articleAssets.map((asset) => asset.path),
+            filename,
+            publishedAt: listedArticle.publishedAt,
+            searchText: markdownToSearchText(markdown),
+            status: "success",
+            title: article.title,
+            url: listedArticle.url
+          },
+          assets: articleAssets.map((asset) => ({ data: asset.data, path: asset.path })),
+          identity: checkpoint.identity,
+          rendered: Buffer.isBuffer(rendered) ? rendered : Buffer.from(rendered),
+          state: checkpoint.state
+        });
+      }
 
       manifest.push({
         assetCount: articleAssets.length,
@@ -1017,9 +1095,55 @@ export async function buildWechatAccountZip({
       })),
     assetCount: writtenAssets.size,
     failureCount: failures.length,
+    resumedCount,
     successCount: manifest.filter((item) => item.status === "success").length,
     zip: await zip.generateAsync({ type: "nodebuffer" })
   };
+}
+
+/**
+ * 从检查点还原一篇文章的产物。
+ *
+ * 任何一块缺失（渲染结果或某个资源）都返回 false，让调用方回退到重新抓取——
+ * 拿半份内容拼出的 ZIP 比重抓一次更糟：用户拿到的是一个看似成功、实则缺图的包。
+ */
+async function restoreFromCheckpoint(options: {
+  cached: CheckpointArticle;
+  checkpoint: NonNullable<BuildWechatAccountZipOptions["checkpoint"]>;
+  format: ExportFormat;
+  writtenAssets: Set<string>;
+  zip: JSZip;
+}): Promise<boolean> {
+  const { cached, checkpoint, format, writtenAssets, zip } = options;
+  const checkpointId = deriveCheckpointId(checkpoint.identity);
+
+  if (!cached.filename) return false;
+
+  const rendered = await checkpoint.store.readArticle(checkpointId, cached.filename);
+  if (!rendered) return false;
+
+  const restoredAssets: Array<{ data: Buffer; path: string }> = [];
+
+  for (const assetPath of cached.assetPaths) {
+    if (writtenAssets.has(assetPath)) continue;
+
+    const data = await checkpoint.store.readAsset(checkpointId, assetPath);
+    if (!data) return false;
+
+    restoredAssets.push({ data, path: assetPath });
+  }
+
+  // 全部就位后再写入 zip，避免中途返回 false 时留下半份资源
+  for (const asset of restoredAssets) {
+    writtenAssets.add(asset.path);
+    zip.file(asset.path, asset.data);
+  }
+
+  if (format !== "csv") {
+    zip.file(cached.filename, rendered);
+  }
+
+  return true;
 }
 
 function numberedArticleFilename(

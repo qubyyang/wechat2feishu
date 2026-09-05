@@ -38,6 +38,7 @@ function outcome(successCount: number): AccountExportOutcome {
   return {
     assetCount: 0,
     filename: "demo.zip",
+    resumedCount: 0,
     skippedCount: 0,
     successCount,
     warnings: [],

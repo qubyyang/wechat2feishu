@@ -36,3 +36,4 @@ pnpm-debug.log*
 .vercel/
 .workbuddy
 data/search-index.json
+data/checkpoints/

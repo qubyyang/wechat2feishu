@@ -1,5 +1,10 @@
 import { ArchiveIndexStore, filterUnarchivedArticles } from "./archive-index";
 import { assertWechatBatchConfig, getServerConfig } from "./env";
+import {
+  buildFilterKey,
+  ExportCheckpointStore,
+  type CheckpointIdentity
+} from "./export-checkpoint";
 import { HistoryStore } from "./history";
 import { safeDocumentTitle } from "./safe";
 import { SearchIndexStore } from "./search-index";
@@ -14,6 +19,8 @@ import {
 export type AccountExportOutcome = {
   assetCount: number;
   filename: string;
+  /** 从检查点复用、未重新抓取的文章数 */
+  resumedCount: number;
   skippedCount: number;
   successCount: number;
   warnings: string[];
@@ -115,17 +122,39 @@ export async function runAccountExport(
     warnings.push(`增量模式跳过 ${skipped.length} 篇已归档文章。`);
   }
 
+  // 检查点在**抓正文之前**建立：列表阶段没花多少配额，正文抓取才是需要保护的部分
+  const checkpointIdentity: CheckpointIdentity = {
+    accountId,
+    filterKey: buildFilterKey(filter),
+    format
+  };
+  const checkpointStore = config.checkpointEnabled
+    ? new ExportCheckpointStore(config.checkpointDir)
+    : undefined;
+  const checkpoint = checkpointStore
+    ? {
+        identity: checkpointIdentity,
+        state: await checkpointStore.load(checkpointIdentity),
+        store: checkpointStore
+      }
+    : undefined;
+
   const result = await buildWechatAccountZip({
     accountId,
     articles: unarchived,
     assetIntervalMs: config.assetIntervalMs,
     assetMaxBytes: config.assetMaxBytes,
+    checkpoint,
     downloadMedia: config.downloadMedia,
     format,
     intervalMs: config.wechatArticleIntervalMs,
     onProgress,
     onWarning: (message) => warnings.push(message)
   });
+
+  if (result.resumedCount) {
+    warnings.push(`断点续传复用 ${result.resumedCount} 篇已抓取内容，未重复请求微信。`);
+  }
 
   await archiveIndex.record(
     accountId,
@@ -150,6 +179,18 @@ export async function runAccountExport(
     }
   }
 
+  // ZIP 已经拿到手，检查点完成使命。留着只会让下次同参数导出误复用陈旧分片。
+  // 清理失败不影响本次结果，因此只记警告——过期分片还有 TTL 兜底。
+  if (checkpointStore) {
+    try {
+      await checkpointStore.discard(checkpointIdentity);
+    } catch (error) {
+      warnings.push(
+        `检查点清理失败：${error instanceof Error ? error.message : "未知错误"}`
+      );
+    }
+  }
+
   const history = new HistoryStore(config.historyPath);
   await history.add({
     sourceUrl: `wechat-account:${accountId}`,
@@ -167,6 +208,7 @@ export async function runAccountExport(
   return {
     assetCount: result.assetCount,
     filename: `${safeDocumentTitle(accountId)}-公众号文章.zip`,
+    resumedCount: result.resumedCount,
     skippedCount: skipped.length,
     successCount: result.successCount,
     warnings,

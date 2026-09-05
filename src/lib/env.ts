@@ -31,6 +31,12 @@ export type ServerConfig = {
   assetIntervalMs: number;
   assetMaxBytes: number;
   baseUrl: string;
+  /** 断点续传检查点根目录 */
+  checkpointDir: string;
+  /** 是否启用断点续传 */
+  checkpointEnabled: boolean;
+  /** 检查点存活时长，超期在列举时顺带清理 */
+  checkpointTtlMs: number;
   downloadMedia: boolean;
   /** 流式导出时 ZIP 的服务端暂存目录 */
   exportJobDir: string;
@@ -116,6 +122,14 @@ export function getServerConfig(): ServerConfig {
       200 * 1024 * 1024
     ),
     baseUrl: process.env.FEISHU_APP_BASE_URL ?? "https://open.feishu.cn",
+    checkpointDir: process.env.W2F_CHECKPOINT_DIR ?? "./data/checkpoints",
+    checkpointEnabled: readBooleanEnv("W2F_CHECKPOINT_ENABLED", true),
+    checkpointTtlMs: readNumberEnv(
+      "W2F_CHECKPOINT_TTL_MS",
+      7 * 24 * 60 * 60 * 1000,
+      60 * 60 * 1000,
+      90 * 24 * 60 * 60 * 1000
+    ),
     downloadMedia: readBooleanEnv("W2F_DOWNLOAD_MEDIA", false),
     exportJobDir: process.env.W2F_EXPORT_JOB_DIR ?? "./data/export-jobs",
     exportJobTtlMs: readNumberEnv(

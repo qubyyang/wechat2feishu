@@ -28,6 +28,7 @@ The local app looks like this:
 - Live batch export progress: listing, per-article fetching and packaging are reported over SSE and rendered as a progress bar; the finished ZIP is staged server-side and picked up by a second request that consumes it.
 - Scheduled incremental archiving: configured accounts are exported at a fixed interval into timestamped ZIPs under `data/archives/`, with per-account status and a manual trigger in the console.
 - Full-text search over archives: the index is built during export, Chinese is tokenized with bigrams and terms are combined with AND, so past archives can be searched with snippets straight from the console.
+- Resumable export: each finished article is flushed to disk at once, so retrying an interrupted export with the same parameters only fills the gaps and never re-spends WeChat quota on what was already fetched.
 - Keep a local transfer history.
 
 ## Project Status
@@ -77,6 +78,11 @@ W2F_SCHEDULE_STATE_PATH=./data/schedule-state.json # Last run time and result pe
 # Full-text search over archives (index is written during export; search never re-fetches WeChat)
 W2F_SEARCH_INDEX_ENABLED=true                     # Whether batch export writes the search index
 W2F_SEARCH_INDEX_PATH=./data/search-index.json    # Index file location
+
+# Resumable export (a retry only fills the gaps)
+W2F_CHECKPOINT_ENABLED=true                       # Whether resumable export is enabled
+W2F_CHECKPOINT_DIR=./data/checkpoints             # Where checkpoint shards are stored
+W2F_CHECKPOINT_TTL_MS=604800000                   # Checkpoint lifetime, 7 days by default
 ```
 
 ## Scheduled Incremental Archiving
@@ -105,6 +111,23 @@ curl 'http://localhost:3000/api/search?q=大模型&limit=10'
 ```
 
 Without `q`, the endpoint returns only the indexed document count and update time per account. A missing or corrupted index degrades to an empty index and never blocks export.
+
+## Resumable Export
+
+When a batch export dies on article 150, the quota spent on the first 149 would normally be wasted — and a rate-limit penalty can last for hours. Resumable export closes that hole: **every finished article is flushed to disk immediately**, rendered output and image bytes included, so a retry replays those shards straight from disk without touching WeChat or waiting on the pacing queue.
+
+Shards go to disk rather than memory because process crashes, container restarts and serverless instance recycling are exactly the failures that kill long-running jobs, and in-memory state does not survive any of them.
+
+The checkpoint ID is derived by hashing account ID + export format + filter, deliberately **deterministic** instead of a random UUID: on retry the user only has those parameters in hand and has no ID to pass. Identical parameters always land on the same checkpoint, while a different format or filter forks naturally, so markdown shards can never be mistaken for pdf output.
+
+To resume, simply run the export again with the **same account ID, format and filter**. The "unfinished exports" panel in the console lists what can be resumed.
+
+```bash
+curl http://localhost:3000/api/checkpoint                      # list resumable jobs
+curl -X DELETE 'http://localhost:3000/api/checkpoint?checkpointId=<id>'  # discard
+```
+
+Checkpoints are cleared automatically once an export succeeds. If a shard file is gone while its state entry remains, that article **falls back to being re-fetched** instead of producing a package with missing images — half a payload is worse than one extra fetch, because the user would get a ZIP that looks complete but is not.
 
 2. In Feishu Open Platform, grant your custom app these permissions:
 

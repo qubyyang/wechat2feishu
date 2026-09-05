@@ -14,6 +14,7 @@ import {
   Loader2,
   LogIn,
   ShieldCheck,
+  RotateCcw,
   Search,
   Sparkles,
   Timer,
@@ -39,6 +40,15 @@ type SearchHit = {
   snippet: string;
   title: string;
   url: string;
+};
+
+type ExportCheckpoint = {
+  accountId: string;
+  checkpointId: string;
+  doneCount: number;
+  failedCount: number;
+  format: ExportFormat;
+  updatedAt: string;
 };
 
 type SearchIndexAccount = {
@@ -160,6 +170,7 @@ export function TransferConsole() {
   const [searchHits, setSearchHits] = useState<SearchHit[] | null>(null);
   const [searchAccounts, setSearchAccounts] = useState<SearchIndexAccount[]>([]);
   const [searchPending, setSearchPending] = useState(false);
+  const [checkpoints, setCheckpoints] = useState<ExportCheckpoint[]>([]);
   const [url, setUrl] = useState("");
   const pending = pendingAction !== null;
   const canTransferToFeishu = Boolean(config?.ready);
@@ -193,6 +204,20 @@ export function TransferConsole() {
       const json = (await searchResponse.json()) as { accounts: SearchIndexAccount[] };
       setSearchAccounts(json.accounts);
     }
+
+    const checkpointResponse = await fetch("/api/checkpoint");
+    if (checkpointResponse.ok) {
+      const json = (await checkpointResponse.json()) as { checkpoints: ExportCheckpoint[] };
+      setCheckpoints(json.checkpoints);
+    }
+  }
+
+  /** 丢弃检查点，用于用户想彻底重抓的场景 */
+  async function discardCheckpoint(checkpointId: string) {
+    await fetch(`/api/checkpoint?checkpointId=${encodeURIComponent(checkpointId)}`, {
+      method: "DELETE"
+    });
+    setCheckpoints((items) => items.filter((item) => item.checkpointId !== checkpointId));
   }
 
   async function handleSearch(event: FormEvent<HTMLFormElement>) {
@@ -813,6 +838,49 @@ export function TransferConsole() {
               </p>
             )}
           </section>
+
+          {checkpoints.length ? (
+            <section className="min-w-0 rounded-lg border border-black/10 bg-white/56 p-6 shadow-soft backdrop-blur-2xl">
+              <h2 className="mb-4 inline-flex items-center gap-2 text-lg font-semibold">
+                <RotateCcw size={18} />
+                未完成的导出
+              </h2>
+
+              <p className="mb-3 text-sm leading-6 text-stone-600 [overflow-wrap:anywhere]">
+                下列导出中断在半途，已抓取的正文都留在本地。用<strong>相同的公众号 ID、格式与筛选条件</strong>
+                再次导出即可续传，已抓过的部分不会重复请求微信。
+              </p>
+
+              <ul className="space-y-2">
+                {checkpoints.map((item) => (
+                  <li
+                    className="flex items-center justify-between gap-3 rounded-md border border-black/10 bg-white/70 px-3 py-2"
+                    key={item.checkpointId}
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-stone-700">
+                        {item.accountId}
+                      </p>
+                      <p className="mt-0.5 text-xs text-stone-500">
+                        已抓 {item.doneCount} 篇
+                        {item.failedCount ? `，失败 ${item.failedCount} 篇` : ""}
+                        ，{formatLabel(item.format)}，
+                        {new Date(item.updatedAt).toLocaleString("zh-CN")}
+                      </p>
+                    </div>
+                    <button
+                      className="shrink-0 rounded-md border border-black/10 px-2 py-1 text-xs text-stone-500 transition hover:bg-white"
+                      onClick={() => discardCheckpoint(item.checkpointId)}
+                      title="丢弃后下次导出将完整重抓"
+                      type="button"
+                    >
+                      丢弃
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
 
           {schedule ? (
             <section className="min-w-0 rounded-lg border border-black/10 bg-white/56 p-6 shadow-soft backdrop-blur-2xl">
