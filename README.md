@@ -18,10 +18,10 @@ English: A self-hosted WeChat public account article archiver that exports artic
 
 ## 功能
 
-- 单篇公众号文章链接转 Markdown 或 HTML（HTML 为带阅读样式、可直接在浏览器打开的独立文档）。
+- 单篇公众号文章链接转 Markdown / HTML / PDF / DOCX / MHTML（HTML 为带阅读样式、可直接在浏览器打开的独立文档；MHTML 内嵌图片为单文件存档）。
 - 单篇公众号文章导入飞书文档。
 - 从公众号文章链接提取公众号 ID（文章 URL 中的 `__biz`）。
-- 使用公众号 ID 批量获取文章列表，并将文章内容导出为 Markdown 或 HTML zip。
+- 使用公众号 ID 批量获取文章列表，并将文章内容导出为 Markdown / HTML / PDF / DOCX / MHTML zip，或导出为汇总 CSV 清单。
 - 批量导出时把正文图片一并下载进 zip 的 `assets/` 目录，正文改用相对路径引用（音视频可选开启）。
 - 增量导出：按公众号维度记录已归档文章，重复导出时自动跳过，避免重复消耗微信频控配额。
 - 列表筛选：按标题关键词、发布日期区间、是否原创过滤，筛选发生在抓正文之前。

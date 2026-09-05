@@ -41,7 +41,7 @@ type HistoryRecord = {
   title: string;
 };
 
-type ExportFormat = "html" | "markdown";
+type ExportFormat = "csv" | "docx" | "html" | "markdown" | "mhtml" | "pdf";
 
 type PendingAction = "account-export" | "account-id" | "export" | "transfer";
 
@@ -140,12 +140,11 @@ export function TransferConsole() {
       }
 
       const blob = await response.blob();
-      const extension = exportFormat === "html" ? "html" : "md";
       const filename =
         getFilenameFromDisposition(response.headers.get("content-disposition")) ??
-        `微信文章归档.${extension}`;
+        `微信文章归档.${formatExtension(exportFormat)}`;
       downloadBlob(blob, filename);
-      setMessage(`已导出 ${exportFormat === "html" ? "HTML" : "Markdown"}：${filename}`);
+      setMessage(`已导出 ${formatLabel(exportFormat)}：${filename}`);
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "导出失败");
@@ -212,7 +211,7 @@ export function TransferConsole() {
       const assetCount = Number(response.headers.get("x-w2f-asset-count") ?? 0);
       downloadBlob(blob, filename);
       setMessage(
-        `已导出公众号 ${exportFormat === "html" ? "HTML" : "Markdown"} 压缩包：${filename}` +
+        `已导出公众号 ${formatLabel(exportFormat)} 压缩包：${filename}` +
           (assetCount ? `，内含 ${assetCount} 个资源文件` : "") +
           (skippedCount ? `，增量跳过 ${skippedCount} 篇已归档文章` : "")
       );
@@ -325,7 +324,7 @@ export function TransferConsole() {
                   ) : (
                     <FileText size={18} />
                   )}
-                  导出 {exportFormat === "html" ? "HTML" : "Markdown"}
+                  导出 {formatLabel(exportFormat)}
                 </button>
               </div>
             </div>
@@ -410,6 +409,10 @@ export function TransferConsole() {
               >
                 <option value="markdown">Markdown</option>
                 <option value="html">HTML</option>
+                <option value="pdf">PDF</option>
+                <option value="docx">DOCX</option>
+                <option value="mhtml">MHTML</option>
+                <option value="csv">CSV 清单</option>
               </select>
               <button
                 className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(21,21,21,.12)] transition hover:-translate-y-0.5 hover:bg-[#2b2b2b] disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-stone-400"
@@ -422,7 +425,7 @@ export function TransferConsole() {
                 ) : (
                   <Download size={17} />
                 )}
-                下载 ZIP（{exportFormat === "html" ? "HTML" : "MD"}）
+                下载 ZIP（{formatLabel(exportFormat)}）
               </button>
             </div>
             <label className="mt-3 inline-flex cursor-pointer items-center gap-2 text-xs text-stone-600">
@@ -593,6 +596,23 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(href);
 }
 
+const FORMAT_LABELS: Record<ExportFormat, string> = {
+  csv: "CSV 清单",
+  docx: "DOCX",
+  html: "HTML",
+  markdown: "Markdown",
+  mhtml: "MHTML",
+  pdf: "PDF"
+};
+
+function formatLabel(format: ExportFormat): string {
+  return FORMAT_LABELS[format];
+}
+
+function formatExtension(format: ExportFormat): string {
+  return format === "markdown" ? "md" : format;
+}
+
 function StatusRow({ active, label }: { active: boolean; label: string }) {
   return (
     <div className="flex items-center justify-between rounded-md border border-white/10 bg-white/6 px-3 py-3">
@@ -618,7 +638,10 @@ function FormatPicker({
 }) {
   const options: Array<{ label: string; value: ExportFormat }> = [
     { label: "Markdown", value: "markdown" },
-    { label: "HTML", value: "html" }
+    { label: "HTML", value: "html" },
+    { label: "PDF", value: "pdf" },
+    { label: "DOCX", value: "docx" },
+    { label: "MHTML", value: "mhtml" }
   ];
 
   return (

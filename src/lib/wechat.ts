@@ -1,18 +1,22 @@
 import * as cheerio from "cheerio";
 import JSZip from "jszip";
-import { existsSync } from "node:fs";
 import sanitizeHtml from "sanitize-html";
 import TurndownService from "turndown";
 
 import { localizeArticleAssets } from "./assets";
+import { launchChromiumPage, resolveChromeExecutable } from "./browser";
 import { backoffDelay, sleep } from "./pacing";
+import { buildManifestCsv, renderArticle } from "./renderers";
 import {
   assertWechatArticleUrl,
   compactWhitespace,
+  exportFormatExtension,
   safeFilenameWithExtension
 } from "./safe";
 import type {
+  ArticleAsset,
   ExportFormat,
+  PerArticleExportFormat,
   WechatArticle,
   WechatPublishedArticle
 } from "./types";
@@ -109,35 +113,27 @@ export async function fetchWechatHtml(url: string): Promise<string> {
 }
 
 async function fetchWechatHtmlWithBrowser(url: string): Promise<string> {
-  const executablePath = resolveChromeExecutable();
-
-  if (!executablePath) {
+  if (!resolveChromeExecutable()) {
     throw new Error(
       "微信返回了安全验证页。可在 .env 中填写 W2F_CHROME_EXECUTABLE_PATH 启用浏览器抓取回退。"
     );
   }
 
   try {
-    const { chromium } = await importPlaywright();
-    const browser = await chromium.launch({
-      executablePath,
-      headless: true
-    });
+    return await launchChromiumPage(
+      async (page) => {
+        await page.goto(url, { timeout: 45_000, waitUntil: "domcontentloaded" });
+        await page.waitForTimeout(1200);
+        const html = await page.content();
 
-    try {
-      const page = await browser.newPage({ userAgent: WECHAT_UA });
-      await page.goto(url, { timeout: 45_000, waitUntil: "domcontentloaded" });
-      await page.waitForTimeout(1200);
-      const html = await page.content();
+        if (html.includes("secitptpage/verify") || html.includes("TCaptcha")) {
+          throw new Error("微信浏览器抓取仍遇到安全验证，请稍后重试。");
+        }
 
-      if (html.includes("secitptpage/verify") || html.includes("TCaptcha")) {
-        throw new Error("微信浏览器抓取仍遇到安全验证，请稍后重试。");
-      }
-
-      return html;
-    } finally {
-      await browser.close();
-    }
+        return html;
+      },
+      { userAgent: WECHAT_UA }
+    );
   } catch (error) {
     if (error instanceof Error) {
       throw error;
@@ -147,77 +143,8 @@ async function fetchWechatHtmlWithBrowser(url: string): Promise<string> {
   }
 }
 
-function resolveChromeExecutable(): string | undefined {
-  const configured = process.env.W2F_CHROME_EXECUTABLE_PATH?.trim();
-
-  if (configured) {
-    // 配置错路径时（例如误填成飞书 token）不要静默失败，回退到自动探测
-    if (existsSync(configured)) {
-      return configured;
-    }
-
-    console.warn(
-      `[w2f] W2F_CHROME_EXECUTABLE_PATH 指向的路径不存在：${configured}，改用自动探测的浏览器。`
-    );
-  }
-
-  const candidates = [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/chromium"
-  ];
-
-  return candidates.find((candidate) => existsSync(candidate));
-}
-
-type PlaywrightPage = {
-  content(): Promise<string>;
-  goto(
-    url: string,
-    options: { timeout: number; waitUntil: "domcontentloaded" }
-  ): Promise<unknown>;
-  waitForTimeout(timeout: number): Promise<void>;
-};
-
-type PlaywrightBrowser = {
-  close(): Promise<void>;
-  newPage(options: { userAgent: string }): Promise<PlaywrightPage>;
-};
-
-type PlaywrightChromium = {
-  launch(options: { executablePath: string; headless: boolean }): Promise<PlaywrightBrowser>;
-};
-
-/**
- * playwright-core 是 CJS 包，Node 原生动态 import 时拿不到具名导出 `chromium`，
- * 只能从 default 上取。两种形状都要兼容，否则浏览器抓取回退会直接抛 TypeError。
- */
-export function resolvePlaywrightChromium(module: unknown): PlaywrightChromium | undefined {
-  const candidate = (module ?? {}) as {
-    chromium?: PlaywrightChromium;
-    default?: { chromium?: PlaywrightChromium };
-  };
-
-  return candidate.chromium ?? candidate.default?.chromium;
-}
-
-async function importPlaywright(): Promise<{ chromium: PlaywrightChromium }> {
-  const dynamicImport = new Function(
-    "specifier",
-    "return import(specifier)"
-  ) as (specifier: string) => Promise<unknown>;
-
-  const chromium = resolvePlaywrightChromium(await dynamicImport("playwright-core"));
-
-  if (!chromium) {
-    throw new Error("未能加载 playwright-core，请确认依赖已安装。");
-  }
-
-  return { chromium };
-}
+/** 保留再导出：既有测试直接引用了它，也让调用方不必知道 browser.ts */
+export { resolvePlaywrightChromium } from "./browser";
 
 export function extractWechatArticle(html: string, sourceUrl: string): WechatArticle {
   const $ = cheerio.load(html);
@@ -922,7 +849,7 @@ export async function buildWechatAccountZip({
       let article = converted.article;
       let markdown = converted.markdown;
       let coverPath: string | undefined;
-      let articleAssetCount = 0;
+      let articleAssets: ArticleAsset[] = [];
 
       if (downloadAssets) {
         const localized = await localizeArticleAssets({
@@ -941,7 +868,7 @@ export async function buildWechatAccountZip({
           markdown = articleToMarkdown(article);
         }
         coverPath = localized.coverPath;
-        articleAssetCount = localized.assets.length;
+        articleAssets = localized.assets;
 
         for (const asset of localized.assets) {
           if (writtenAssets.has(asset.path)) continue;
@@ -951,12 +878,26 @@ export async function buildWechatAccountZip({
         }
       }
 
-      const filename = numberedArticleFilename(index + 1, article.title, format);
-      zip.file(filename, format === "html" ? articleToHtml(article) : markdown);
+      // csv 是整批汇总，不产出单篇文件；此时正文仍按 markdown 渲染以填充清单
+      const perArticleFormat: PerArticleExportFormat =
+        format === "csv" ? "markdown" : format;
+      const rendered = await renderArticle({
+        article,
+        assets: articleAssets,
+        format: perArticleFormat,
+        html: articleToHtml(article),
+        markdown
+      });
+      const filename = numberedArticleFilename(index + 1, article.title, perArticleFormat);
+
+      if (format !== "csv") {
+        zip.file(filename, rendered);
+      }
+
       manifest.push({
-        assetCount: articleAssetCount,
+        assetCount: articleAssets.length,
         coverPath,
-        filename,
+        filename: format === "csv" ? undefined : filename,
         publishedAt: listedArticle.publishedAt,
         status: "success",
         title: article.title,
@@ -976,6 +917,24 @@ export async function buildWechatAccountZip({
         url: listedArticle.url
       });
     }
+  }
+
+  // csv 是整批汇总表，作为 ZIP 里唯一的产物
+  if (format === "csv") {
+    zip.file(
+      "articles.csv",
+      buildManifestCsv(
+        manifest.map((item) => ({
+          assetCount: item.assetCount,
+          error: failures.find((failure) => failure.url === item.url)?.error,
+          filename: item.filename,
+          publishedAt: item.publishedAt,
+          status: item.status,
+          title: item.title,
+          url: item.url
+        }))
+      )
+    );
   }
 
   if (failures.length) {
@@ -1006,9 +965,9 @@ export async function buildWechatAccountZip({
 
   return {
     archived: manifest
-      .filter((item) => item.status === "success" && item.filename)
+      .filter((item) => item.status === "success")
       .map((item) => ({
-        filename: item.filename as string,
+        filename: item.filename ?? "",
         publishedAt: item.publishedAt,
         title: item.title,
         url: item.url
@@ -1023,10 +982,9 @@ export async function buildWechatAccountZip({
 function numberedArticleFilename(
   index: number,
   title: string,
-  format: ExportFormat
+  format: PerArticleExportFormat
 ): string {
-  const extension = format === "html" ? "html" : "md";
-  const filename = safeFilenameWithExtension(title, extension);
+  const filename = safeFilenameWithExtension(title, exportFormatExtension(format));
 
   return `${String(index).padStart(3, "0")}-${filename}`;
 }

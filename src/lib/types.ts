@@ -1,4 +1,7 @@
-export type ExportFormat = "html" | "markdown";
+export type ExportFormat = "csv" | "docx" | "html" | "markdown" | "mhtml" | "pdf";
+
+/** 逐篇渲染的格式；csv 是整批汇总，不产出单篇文件 */
+export type PerArticleExportFormat = Exclude<ExportFormat, "csv">;
 
 export type WechatArticle = {
   author?: string;
@@ -64,7 +67,7 @@ export type TransferHistoryRecord = {
   id: string;
   sourceUrl: string;
   status: "failed" | "success";
-  target?: "feishu" | "html" | "markdown";
+  target?: "feishu" | ExportFormat;
   title: string;
 };
 

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   parseExportFormat,
+  parseSingleArticleExportFormat,
   safeFilenameWithExtension,
   safeHtmlFilename,
   safeMarkdownFilename
@@ -31,13 +32,22 @@ describe("parseExportFormat", () => {
     expect(parseExportFormat("")).toBe("markdown");
   });
 
-  test("accepts markdown and html", () => {
+  test("accepts every supported format", () => {
     expect(parseExportFormat("markdown")).toBe("markdown");
     expect(parseExportFormat("html")).toBe("html");
+    expect(parseExportFormat("pdf")).toBe("pdf");
+    expect(parseExportFormat("docx")).toBe("docx");
+    expect(parseExportFormat("mhtml")).toBe("mhtml");
+    expect(parseExportFormat("csv")).toBe("csv");
   });
 
   test("rejects anything else", () => {
-    expect(() => parseExportFormat("pdf")).toThrow(/markdown 或 html/);
-    expect(() => parseExportFormat(123)).toThrow(/markdown 或 html/);
+    expect(() => parseExportFormat("epub")).toThrow(/不支持的导出格式/);
+    expect(() => parseExportFormat(123)).toThrow(/不支持的导出格式/);
+  });
+
+  test("single article export rejects csv", () => {
+    expect(parseSingleArticleExportFormat("pdf")).toBe("pdf");
+    expect(() => parseSingleArticleExportFormat("csv")).toThrow(/单篇导出不支持/);
   });
 });
